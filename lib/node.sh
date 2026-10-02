@@ -334,7 +334,7 @@ node_apply_candidate_state() {
       rm -rf "$tmpdir"
       return "$rc"
     fi
-    autostart=$(jq -r '[.nodes[]|select((.enabled//true)==true)] |
+    autostart=$(jq -r '[.nodes[]|select((if has("enabled") then .enabled else true end)==true)] |
       if length==0 then true else (if .[0]|has("autostart") then .[0].autostart else true end) end' "$candidate")
     if [[ $service_mode == normal || $was_active == true ]]; then
       tx_mark_service_changed "$tx" "$RM_XRAY_SERVICE" || true
