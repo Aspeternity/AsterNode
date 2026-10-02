@@ -49,10 +49,12 @@ node_assert_no_direct_credential_change() {
   fi
 
   if ! jq -e --slurpfile st "$RM_STATE_FILE" '
-    all((.upstreams // [])[] as $u;
+    [
+      (.upstreams // [])[] |
+      . as $u |
       ([ $st[0].upstreams[] | select(.upstream_id==($u.upstream_id // "")) ] | first // null) as $old |
       ($old == null or (($u.uuid? // $old.uuid) == $old.uuid))
-    )
+    ] | all
   ' "$input" >/dev/null; then
     rm_error '普通节点修改禁止直接替换已有线路机 UUID；请使用 UUID 轮换操作。'
     return "$RM_RC_PRECONDITION"
