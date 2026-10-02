@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "updated": "2026-10-02",
+  "candidates": [
+    {"target":"www.microsoft.com:443","sni":"www.microsoft.com","note":"通用候选；必须在目标 VPS 实测"},
+    {"target":"www.apple.com:443","sni":"www.apple.com","note":"通用候选；必须在目标 VPS 实测"},
+    {"target":"www.amazon.com:443","sni":"www.amazon.com","note":"通用候选；必须在目标 VPS 实测"}
+  ],
+  "policy":"候选仅用于探测，不自动选择；CDN/特殊网络目标需额外审查未认证回落转发风险。"
+}
