@@ -1,0 +1,12 @@
+[Unit]
+Description=Relay Manager periodic maintenance
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=2min
+AccuracySec=20s
+Persistent=true
+Unit=relay-manager-maintenance.service
+
+[Install]
+WantedBy=timers.target
