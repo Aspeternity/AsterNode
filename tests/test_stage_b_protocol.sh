@@ -18,12 +18,12 @@ client=$("$vr" render_client "$spec" up-line-a)
 uri=$("$vr" render_uri "$spec" up-line-a)
 
 assert_json "$server" '
-  .inbounds|length==1 and
-  .[0].protocol=="vless" and
-  .[0].streamSettings.network=="raw" and
-  .[0].streamSettings.security=="reality" and
-  .[0].streamSettings.realitySettings.target=="www.microsoft.com:443" and
-  .[0].settings.clients|length==2
+  (.inbounds|length)==1 and
+  .inbounds[0].protocol=="vless" and
+  .inbounds[0].streamSettings.network=="raw" and
+  .inbounds[0].streamSettings.security=="reality" and
+  .inbounds[0].streamSettings.realitySettings.target=="www.microsoft.com:443" and
+  (.inbounds[0].settings.clients|length)==2
 '
 assert_json "$client" '
   .protocol=="vless" and
