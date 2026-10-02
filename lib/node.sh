@@ -227,6 +227,24 @@ node_candidate_validate_bindings() {
   }
 }
 
+node_address_family_preflight_candidate() {
+  local f=$1
+  [[ ${RM_TEST_MODE} == 1 ]] && return 0
+
+  if jq -e '[.nodes[]|select((if has("enabled") then .enabled else true end)==true and
+      (.listen_address=="::" or .listen_address=="::1"))]|length>0' "$f" >/dev/null; then
+    if [[ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 ]] &&
+       [[ $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6) == 1 ]]; then
+      rm_error '候选配置需要 IPv6 监听，但内核当前禁用了 IPv6。'
+      return "$RM_RC_PRECONDITION"
+    fi
+    if rm_have ip && ! ip -6 addr show 2>/dev/null | grep -q 'inet6 '; then
+      rm_error '候选配置需要 IPv6 监听，但系统未发现可用 IPv6 地址族。'
+      return "$RM_RC_PRECONDITION"
+    fi
+  fi
+}
+
 node_port_preflight_candidate() {
   local f=$1 mainpid lines nid port foreign
   [[ ${RM_TEST_MODE} == 1 ]] && return 0
@@ -307,6 +325,7 @@ node_apply_candidate_state() {
     }
     xray_test_config "$config" "$core" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
     xray_ensure_user || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+    node_address_family_preflight_candidate "$candidate" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
     node_port_preflight_candidate "$candidate" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   fi
 
@@ -409,7 +428,16 @@ node_create_or_replace_spec() {
   node_prepare_spec "$input" "$spec" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   node_candidate_from_spec "$spec" "$candidate" "$mode" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   node_apply_candidate_state "$candidate" "node-$mode" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
-  jq '{node_id:.node.node_id,upstream_ids:[.upstreams[].upstream_id]}' "$spec"
+
+  if [[ $mode == upsert ]] && declare -F export_invalidate_upstream >/dev/null 2>&1; then
+    local export_upid
+    while IFS= read -r export_upid; do
+      [[ -n $export_upid ]] && export_invalidate_upstream "$export_upid" || true
+    done < <(jq -r '.upstreams[].upstream_id' "$spec")
+  fi
+
+  jq --argjson invalidated "$([[ $mode == upsert ]] && printf true || printf false)" \
+    '{node_id:.node.node_id,upstream_ids:[.upstreams[].upstream_id],exports_invalidated:$invalidated}' "$spec"
   rm -rf "$tmpdir"
 }
 
@@ -578,11 +606,116 @@ upstream_update_from_json() {
     mv "$t2" "$obj"
   done
 
+  t2=$(mktemp "$tmpdir/up.unique.XXXX") || { rm -rf "$tmpdir"; return "$RM_RC_INTERNAL"; }
+  jq '.source_addresses |= unique' "$obj" >"$t2"
+  mv "$t2" "$obj"
+
   jq --arg id "$upid" --slurpfile obj "$obj" '
     .upstreams=[.upstreams[]|if .upstream_id==$id then $obj[0] else . end] | .config_revision+=1
   ' "$RM_STATE_FILE" | jq "$_node_sources_rebuild_filter" >"$candidate"
   node_apply_candidate_state "$candidate" upstream-update || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   declare -F export_invalidate_upstream >/dev/null 2>&1 && export_invalidate_upstream "$upid" || true
+  rm -rf "$tmpdir"
+}
+
+upstream_source_scope_json() {
+  local input=$1 norm family prefix scope=single warning=''
+  norm=$(rm_normalize_ip_or_cidr "$input") || {
+    rm_error "无效线路机来源: $input"
+    return "$RM_RC_PRECONDITION"
+  }
+  if [[ $norm == *:* ]]; then family=ipv6; else family=ipv4; fi
+  if [[ $norm == */* ]]; then
+    prefix=${norm##*/}
+    scope=cidr
+    if [[ $family == ipv4 ]]; then
+      if ((10#$prefix == 0)); then
+        scope=all
+        warning='该来源等同全部 IPv4 地址，范围极大。'
+      elif ((10#$prefix < 24)); then
+        scope=broad
+        warning='该 IPv4 CIDR 范围较大；建议优先使用线路机实际单地址。'
+      fi
+    else
+      if ((10#$prefix == 0)); then
+        scope=all
+        warning='该来源等同全部 IPv6 地址，范围极大。'
+      elif ((10#$prefix < 64)); then
+        scope=broad
+        warning='该 IPv6 CIDR 范围较大；建议优先使用线路机实际单地址。'
+      fi
+    fi
+  fi
+  jq -n --arg address "$norm" --arg family "$family" --arg scope "$scope" --arg warning "$warning" \
+    '{address:$address,family:$family,scope:$scope,
+      warning:(if $warning=="" then null else $warning end)}'
+}
+
+upstream_source_add() {
+  local upid=$1 input=$2 normalized meta tmpdir patch rc
+  state_init >/dev/null
+  state_get_upstream "$upid" >/dev/null || {
+    rm_error '线路机不存在'
+    return "$RM_RC_PRECONDITION"
+  }
+  meta=$(upstream_source_scope_json "$input") || return $?
+  normalized=$(jq -r .address <<<"$meta")
+  if jq -e --arg id "$upid" --arg addr "$normalized" '
+    .upstreams[]|select(.upstream_id==$id)|.source_addresses[]?|select(.==$addr)
+  ' "$RM_STATE_FILE" >/dev/null; then
+    jq -n --arg up "$upid" --argjson meta "$meta" \
+      '{status:"already_present",upstream_id:$up,source:$meta,
+        restriction_implementation:"intent-only-until-stage-c"}'
+    return 0
+  fi
+
+  tmpdir=$(rm_safe_tmpdir) || return $?
+  patch="$tmpdir/source-add.json"
+  jq --arg id "$upid" --arg addr "$normalized" '
+    (.upstreams[]|select(.upstream_id==$id)|.source_addresses + [$addr] | unique) as $sources |
+    {source_addresses:$sources}
+  ' "$RM_STATE_FILE" >"$patch"
+  upstream_update_from_json "$upid" "$patch" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  jq -n --arg up "$upid" --argjson meta "$meta" \
+    '{status:"added",upstream_id:$up,source:$meta,
+      transition_guidance:"先保留旧来源并从新出口实际验证，确认后再移除旧来源。",
+      restriction_implementation:"intent-only-until-stage-c"}'
+  rm -rf "$tmpdir"
+}
+
+upstream_source_remove() {
+  local upid=$1 input=$2 normalized tmpdir patch rc remaining
+  state_init >/dev/null
+  state_get_upstream "$upid" >/dev/null || {
+    rm_error '线路机不存在'
+    return "$RM_RC_PRECONDITION"
+  }
+  normalized=$(rm_normalize_ip_or_cidr "$input") || {
+    rm_error "无效线路机来源: $input"
+    return "$RM_RC_PRECONDITION"
+  }
+
+  if ! jq -e --arg id "$upid" --arg addr "$normalized" '
+    .upstreams[]|select(.upstream_id==$id)|.source_addresses[]?|select(.==$addr)
+  ' "$RM_STATE_FILE" >/dev/null; then
+    jq -n --arg up "$upid" --arg addr "$normalized" \
+      '{status:"already_absent",upstream_id:$up,address:$addr,
+        restriction_implementation:"intent-only-until-stage-c"}'
+    return 0
+  fi
+
+  tmpdir=$(rm_safe_tmpdir) || return $?
+  patch="$tmpdir/source-remove.json"
+  jq --arg id "$upid" --arg addr "$normalized" '
+    (.upstreams[]|select(.upstream_id==$id)|[.source_addresses[]|select(.!=$addr)] | unique) as $sources |
+    {source_addresses:$sources}
+  ' "$RM_STATE_FILE" >"$patch"
+  upstream_update_from_json "$upid" "$patch" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  remaining=$(jq -r --arg id "$upid" '.upstreams[]|select(.upstream_id==$id)|.source_addresses|length' "$RM_STATE_FILE")
+  jq -n --arg up "$upid" --arg addr "$normalized" --argjson remaining "$remaining" \
+    '{status:"removed",upstream_id:$up,address:$addr,remaining_sources:$remaining,
+      warning:(if $remaining==0 then "来源列表已为空；白名单模式下应保持默认拒绝，阶段 C 不得自动退化为公网开放。" else null end),
+      restriction_implementation:"intent-only-until-stage-c"}'
   rm -rf "$tmpdir"
 }
 

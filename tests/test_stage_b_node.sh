@@ -59,6 +59,21 @@ assert_json "$(cat "$RM_STATE_FILE")" '
   ([.sources[]|select(.address=="198.51.100.9")][0].upstream_ids)==["up-line-b"]
 '
 
+source_add=$(upstream_source_add up-line-a 2001:db8::20)
+assert_json "$source_add" '.status=="added" and .source.family=="ipv6" and .source.scope=="single"'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  any(.upstreams[]|select(.upstream_id=="up-line-a").source_addresses[]; .=="2001:db8::20")
+'
+source_broad=$(upstream_source_add up-line-a 10.0.0.0/8)
+assert_json "$source_broad" '.status=="added" and .source.scope=="broad" and (.source.warning|type=="string")'
+source_remove=$(upstream_source_remove up-line-a 198.51.100.10)
+assert_json "$source_remove" '.status=="removed" and .remaining_sources==2'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  ([.sources[]|select(.address=="198.51.100.10")]|length)==0 and
+  any(.sources[]; .address=="2001:db8::20") and
+  any(.sources[]; .address=="10.0.0.0/8")
+'
+
 upstream_set_enabled up-line-a false
 assert_eq false "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.enabled' "$RM_STATE_FILE")" 'explicit upstream disable was not preserved'
 assert_json "$(cat "$RM_XRAY_CONFIG")" '
@@ -80,6 +95,14 @@ reconciled=$(upstream_rotation_reconcile_expired)
 assert_json "$reconciled" '.expired_rotations==1 and .upstream_ids==["up-line-b"]'
 assert_json "$(cat "$RM_STATE_FILE")" '(.upstreams[]|select(.upstream_id=="up-line-b")|has("pending_uuid")|not)'
 assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds[0].settings.clients|length)==1'
+
+export_upstream up-line-b current false >/dev/null
+replace_spec="$root/replace.json"
+jq '.node.sni="www.amazon.com" | .node.target="www.amazon.com:443"' "$spec" >"$replace_spec"
+replace_result=$(node_create_or_replace_spec "$replace_spec" upsert)
+assert_json "$replace_result" '.node_id=="node-stageb" and .exports_invalidated==true'
+[[ -f "$RM_EXPORT_DIR/node-stageb/up-line-b/current/REVOKED" ]] ||
+  fail 'node replace did not invalidate dependent upstream export'
 
 before_key=$(jq -r '.nodes[]|select(.node_id=="node-stageb")|.reality.password' "$RM_STATE_FILE")
 rotation=$(node_rotate_reality_keys node-stageb)

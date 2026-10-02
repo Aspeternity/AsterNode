@@ -33,7 +33,21 @@ assert_json "$probe" '
   .checks.tcp==false and
   .checks.tls13==false and
   .checks.certificate_hostname==false and
+  .probe_policy.handshake_attempts==2 and
+  .probe_policy.tls_timeout_seconds==6 and
   (.risk_note|contains("不会因 Target 探测自动开放额外端口"))
 '
 
-pass 'Stage B Target candidate data and bounded failure probing'
+target_probe() {
+  jq -n --arg target "$1" --arg sni "$2" '{status:"suitable_measured",target:$target,sni:$sni,latency_ms:1}'
+}
+candidates=$(target_probe_candidates)
+assert_json "$candidates" '
+  (.results|length)==3 and
+  (.suitable|length)==3 and
+  .auto_selected==false and
+  .probe_policy.max_parallel==2 and
+  .probe_policy.handshake_attempts==2
+'
+
+pass 'Stage B Target candidate data, bounded retries and controlled parallel probing'

@@ -157,6 +157,16 @@ upstream_cmd() {
       mutation_guard || return $?
       upstream_rotation_cancel "$1"
       ;;
+    source-add)
+      mutation_guard || return $?
+      [[ -n ${1:-} && -n ${2:-} ]] || return "$RM_RC_PRECONDITION"
+      upstream_source_add "$1" "$2"
+      ;;
+    source-remove)
+      mutation_guard || return $?
+      [[ -n ${1:-} && -n ${2:-} ]] || return "$RM_RC_PRECONDITION"
+      upstream_source_remove "$1" "$2"
+      ;;
     *)
       return "$RM_RC_PRECONDITION"
       ;;
@@ -245,6 +255,7 @@ AsterNode CLI
   relay-manager status               只读状态
   relay-manager quick-deploy         交互快速部署
   relay-manager doctor               D1-D4 分层诊断
+  relay-manager doctor export ABS_PATH [--network]  导出 0600 脱敏诊断包（默认不联网）
   relay-manager doctor record-d4 NODE UPSTREAM EXIT_IP PANEL_VERSION CORE_VERSION [ROUTE_NOTE]
   relay-manager target candidates    查看版本内置 Target 候选（不联网）
   relay-manager target probe-candidates  对候选执行受控联网探测
@@ -252,6 +263,7 @@ AsterNode CLI
   relay-manager core install [VERSION]   安装兼容矩阵固定 Xray
   relay-manager node list|show ID|create FILE|replace FILE|enable ID|disable ID|delete ID|rotate-reality ID
   relay-manager upstream list|show ID|add NODE FILE|update ID FILE|enable ID|disable ID|delete ID
+                    source-add ID IP_OR_CIDR|source-remove ID IP_OR_CIDR
                     rotate-prepare ID [SEC]|rotate-commit ID|rotate-cancel ID
   relay-manager export UPSTREAM [current|pending] [--show]
   relay-manager firewall status|apply NODE SOURCE...|remove-node NODE|temp-open NODE [MIN]|expire-temp NODE
@@ -284,12 +296,19 @@ case "$cmd" in
     quick_deploy
     ;;
   doctor)
-    if [[ ${1:-} == record-d4 ]]; then
-      shift
-      "$BASE_DIR/diagnostics.sh" record-d4 "$@"
-    else
-      "$BASE_DIR/diagnostics.sh" doctor
-    fi
+    case "${1:-}" in
+      record-d4)
+        shift
+        "$BASE_DIR/diagnostics.sh" record-d4 "$@"
+        ;;
+      export)
+        shift
+        "$BASE_DIR/diagnostics.sh" export "$@"
+        ;;
+      *)
+        "$BASE_DIR/diagnostics.sh" doctor
+        ;;
+    esac
     ;;
   target)
     sub=${1:-candidates}; shift || true
