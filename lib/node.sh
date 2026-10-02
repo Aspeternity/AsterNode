@@ -296,6 +296,54 @@ node_assert_managed_config_not_drifted() {
   fi
 }
 
+node_apply_state_only_candidate() {
+  local candidate=$1 type=${2:-state-only} confirm=${3:-true}
+  node_candidate_validate_ids "$candidate" || return $?
+  node_candidate_validate_bindings "$candidate" || return $?
+  node_assert_managed_config_not_drifted || return $?
+
+  if [[ $confirm == true && ${RM_TEST_MODE} != 1 ]]; then
+    printf '将执行 %s；仅更新受管状态，不改写 Xray 运行配置，也不会主动重启 Xray。\n' "$type" >&2
+    jq '{
+      nodes:[.nodes[]|{node_id,name,enabled,autostart}],
+      upstreams:[.upstreams[]|{upstream_id,name,node_id,enabled,source_addresses}]
+    }' "$candidate" >&2
+    rm_confirm '确认应用上述状态变更?' || return "$RM_RC_CANCEL"
+  fi
+
+  local expected_config_sha current_config_sha tx rc=0
+  expected_config_sha=$(jq -r --arg path '/etc/relay-manager-xray/config.json' '
+    [.owned_files[]? | select(.path==$path) | .sha256][0] // empty
+  ' "$RM_STATE_FILE")
+
+  tx=$(tx_begin "$type") || return $?
+  tx_stage_file "$tx" "$candidate" "$RM_STATE_FILE" 0600 root:root || {
+    tx_rollback "$tx" 'state stage failed' || true
+    return "$RM_RC_PRECONDITION"
+  }
+
+  if [[ -n $expected_config_sha ]]; then
+    if [[ ! -f $RM_XRAY_CONFIG || -L $RM_XRAY_CONFIG ]]; then
+      tx_rollback "$tx" 'managed config disappeared before state-only apply' || true
+      rm_error '受管 Xray 配置在状态更新前消失或变成了异常文件类型。'
+      return "$RM_RC_PRECONDITION"
+    fi
+    current_config_sha=$(rm_sha256_file "$RM_XRAY_CONFIG")
+    if [[ $current_config_sha != "$expected_config_sha" ]]; then
+      tx_rollback "$tx" 'managed config drifted before state-only apply' || true
+      rm_error "受管 Xray 配置在状态更新前发生漂移。expected=$expected_config_sha actual=$current_config_sha"
+      return "$RM_RC_PRECONDITION"
+    fi
+  fi
+
+  tx_apply "$tx" || {
+    rc=$?
+    tx_rollback "$tx" 'state-only apply failed' || true
+    return "$rc"
+  }
+  tx_commit "$tx"
+}
+
 node_apply_candidate_state() {
   local candidate=$1 type=${2:-node-change} confirm=${3:-true} service_mode=${4:-normal}
   [[ $confirm == true || $confirm == false ]] || return "$RM_RC_PRECONDITION"
@@ -617,11 +665,29 @@ upstream_update_from_json() {
   jq '.source_addresses |= unique' "$obj" >"$t2"
   mv "$t2" "$obj"
 
+  local runtime_changed export_changed
+  runtime_changed=$(jq -r --arg id "$upid" --slurpfile obj "$obj" '
+    (.upstreams[]|select(.upstream_id==$id)) as $old |
+    ($old.enabled != $obj[0].enabled)
+  ' "$RM_STATE_FILE")
+  export_changed=$(jq -r --arg id "$upid" --slurpfile obj "$obj" '
+    (.upstreams[]|select(.upstream_id==$id)) as $old |
+    (($old.enabled != $obj[0].enabled) or ($old.name != $obj[0].name))
+  ' "$RM_STATE_FILE")
+
   jq --arg id "$upid" --slurpfile obj "$obj" '
     .upstreams=[.upstreams[]|if .upstream_id==$id then $obj[0] else . end] | .config_revision+=1
   ' "$RM_STATE_FILE" | jq "$_node_sources_rebuild_filter" >"$candidate"
-  node_apply_candidate_state "$candidate" upstream-update || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
-  declare -F export_invalidate_upstream >/dev/null 2>&1 && export_invalidate_upstream "$upid" || true
+
+  if [[ $runtime_changed == true ]]; then
+    node_apply_candidate_state "$candidate" upstream-update || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  else
+    node_apply_state_only_candidate "$candidate" upstream-metadata-update || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  fi
+
+  if [[ $export_changed == true ]] && declare -F export_invalidate_upstream >/dev/null 2>&1; then
+    export_invalidate_upstream "$upid" || true
+  fi
   rm -rf "$tmpdir"
 }
 

@@ -58,7 +58,13 @@ cp "$good_config" "$RM_XRAY_CONFIG"
 
 patch="$root/up-patch.json"
 jq -n '{note:"new-egress",enabled:true}' >"$patch"
+config_before_metadata=$(rm_sha256_file "$RM_XRAY_CONFIG")
+: >"$RM_SYSTEMCTL_LOG"
 upstream_update_from_json up-line-a "$patch"
+assert_eq "$config_before_metadata" "$(rm_sha256_file "$RM_XRAY_CONFIG")" 'metadata update rewrote Xray config'
+if grep -Fq 'restart relay-manager-xray.service' "$RM_SYSTEMCTL_LOG"; then
+  fail 'metadata update restarted Xray'
+fi
 assert_eq 198.51.100.9 "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.source_addresses[0]' "$RM_STATE_FILE")"
 
 unsafe_source_replace="$root/unsafe-source-replace.json"
@@ -99,7 +105,13 @@ jq -e --arg addr "$ipv6_norm" '
   any(.sources[]; .address=="10.0.0.0/8")
 ' "$RM_STATE_FILE" >/dev/null || fail 'shared source reference rebuild did not preserve normalized addresses'
 
+if grep -Fq 'restart relay-manager-xray.service' "$RM_SYSTEMCTL_LOG"; then
+  fail 'source transition restarted Xray even though rendered config was unchanged'
+fi
+: >"$RM_SYSTEMCTL_LOG"
 upstream_set_enabled up-line-a false
+grep -Fq 'restart relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 'runtime-affecting upstream disable did not restart Xray'
 assert_eq false "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.enabled' "$RM_STATE_FILE")" 'explicit upstream disable was not preserved'
 assert_json "$(cat "$RM_XRAY_CONFIG")" '
   (.inbounds[0].settings.clients|length)==1 and
