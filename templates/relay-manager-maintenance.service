@@ -1,0 +1,8 @@
+[Unit]
+Description=Relay Manager maintenance reconciliation
+After=local-fs.target
+ConditionPathExists=/etc/relay-manager/state.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/relay-manager reconcile
