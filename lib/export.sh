@@ -77,6 +77,12 @@ export_upstream() {
        security:"reality",server_name:$r.node.sni,fingerprint:"chrome",
        password_or_public_key:$r.node.reality.password,short_id:$r.node.reality.short_id,spider_x:"/"
      },
+     routing_guide:{
+       outbound_tag:("rm-out-"+$u.upstream_id),
+       merge_outbound_into:"outbounds[]",
+       route_selected_traffic_with:"routing.rules[].outboundTag",
+       overwrite_existing_config:false
+     },
      notes:[
        "3x-ui 界面字段名称会随版本变化；请按语义对应，不承诺一键粘贴。",
        "outbound.json 是单个 outbound 对象，不是完整线路机配置。",

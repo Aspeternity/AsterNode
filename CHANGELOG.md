@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0-dev - 2026-10-02
+
+### Stage B node development
+
+- Added pinned Xray v26.3.27 core/profile handling with checksum validation and real-core CI config tests.
+- Added managed `rm-xray` service lifecycle, maintenance timer, multi-node/inbound rendering and explicit autostart handling.
+- Added VLESS + RAW/TCP + REALITY node/upstream lifecycle, credential-safe export and timed UUID rotation.
+- Added Target probing and D1-D4 diagnostics with explicit unverified boundaries.
+- Fixed jq boolean-default semantics so explicit `false` is not treated as an absent value.
+- Added managed-config drift detection and conservative refusal to overwrite external edits.
+- Hardened archive symlink checks and restored executable-mode regression coverage.
+- Stage B remains pre-production until real VPS/systemd/network/T24/T25 evidence is recorded.
+
 ## 0.1.0-dev - 2026-10-02
 
 ### Stage A foundation

@@ -20,13 +20,20 @@ rc=$?
 set -e
 assert_eq 10 "$rc" 'malformed Target was accepted'
 
+set +e
+target_probe '127.0.0.1:443' '127.0.0.1' >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 10 "$rc" 'IP literal was accepted as REALITY SNI'
+
 probe=$(target_probe '127.0.0.1:1' 'www.example.com')
 assert_json "$probe" '
   .status=="failed" and
   .target=="127.0.0.1:1" and
   .checks.tcp==false and
   .checks.tls13==false and
-  .checks.certificate_hostname==false
+  .checks.certificate_hostname==false and
+  (.risk_note|contains("不会因 Target 探测自动开放额外端口"))
 '
 
 pass 'Stage B Target candidate data and bounded failure probing'

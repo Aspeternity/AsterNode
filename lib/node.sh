@@ -284,7 +284,10 @@ node_apply_candidate_state() {
   node_candidate_validate_bindings "$candidate" || return $?
   node_assert_managed_config_not_drifted || return $?
 
-  local tmpdir config core tx rc=0 enabled_count autostart was_active=false cfgsha c2
+  local tmpdir config core tx rc=0 enabled_count autostart was_active=false cfgsha c2 expected_config_sha snapshot_config_sha
+  expected_config_sha=$(jq -r --arg path '/etc/relay-manager-xray/config.json' '
+    [.owned_files[]? | select(.path==$path) | .sha256][0] // empty
+  ' "$RM_STATE_FILE")
   tmpdir=$(rm_safe_tmpdir) || return $?
   config="$tmpdir/config.json"
   xray_render_state_config "$candidate" "$config" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
@@ -338,6 +341,17 @@ node_apply_candidate_state() {
     rm -rf "$tmpdir"
     return "$RM_RC_PRECONDITION"
   }
+  if [[ -n $expected_config_sha ]]; then
+    snapshot_config_sha=$(jq -r --arg dest "$RM_XRAY_CONFIG" '
+      [.files[] | select(.destination==$dest) | .old_sha256][0] // empty
+    ' "$(tx_file "$tx")")
+    if [[ $snapshot_config_sha != "$expected_config_sha" ]]; then
+      tx_rollback "$tx" 'managed config changed before transaction snapshot' || true
+      rm_error "受管 Xray 配置在计划与事务快照之间发生变化。expected=$expected_config_sha snapshot=$snapshot_config_sha"
+      rm -rf "$tmpdir"
+      return "$RM_RC_PRECONDITION"
+    fi
+  fi
   tx_apply "$tx" || {
     rc=$?
     tx_rollback "$tx" 'apply failed' || true

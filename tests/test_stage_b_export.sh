@@ -34,7 +34,11 @@ assert_json "$(cat "$dir/3x-ui.json")" '
   .panel=="3x-ui" and
   .fields.transport_for_xray_json=="raw" and
   .fields.transport_for_share_uri=="tcp" and
-  .fields.password_or_public_key=="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+  .fields.password_or_public_key=="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" and
+  .routing_guide.outbound_tag=="rm-out-up-line-a" and
+  .routing_guide.merge_outbound_into=="outbounds[]" and
+  .routing_guide.route_selected_traffic_with=="routing.rules[].outboundTag" and
+  .routing_guide.overwrite_existing_config==false
 '
 assert_json "$(cat "$dir/manifest.json")" '
   .validation.xray_config_test=="pass" and
