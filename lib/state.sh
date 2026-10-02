@@ -23,7 +23,13 @@ state_init_dirs() {
   rm_assert_no_symlink_components "$(dirname -- "$RM_XRAY_ETC_DIR")" || return $?
   install -d -m 0750 -- "$RM_XRAY_ETC_DIR"
   chmod 0750 -- "$RM_XRAY_ETC_DIR"
-  if [[ ${RM_TEST_MODE} != 1 && $(id -u) -eq 0 ]]; then chown root:root -- "$RM_XRAY_ETC_DIR"; fi
+  if [[ ${RM_TEST_MODE} != 1 && $(id -u) -eq 0 ]]; then
+    if getent group rm-xray >/dev/null 2>&1; then
+      chown root:rm-xray -- "$RM_XRAY_ETC_DIR"
+    else
+      chown root:root -- "$RM_XRAY_ETC_DIR"
+    fi
+  fi
 }
 
 state_lock_acquire() {
