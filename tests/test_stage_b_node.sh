@@ -23,7 +23,7 @@ assert_json "$(cat "$RM_STATE_FILE")" '
   (.sources[0].upstream_ids|sort)==["up-line-a","up-line-b"]
 '
 assert_file_mode "$RM_XRAY_CONFIG" 640
-assert_json "$(cat "$RM_XRAY_CONFIG")" '.inbounds|length==1 and .[0].settings.clients|length==2'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds|length)==1 and (.inbounds[0].settings.clients|length)==2'
 
 bad="$root/bad-replace.json"
 jq '.upstreams[0].uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"' "$spec" >"$bad"
@@ -54,12 +54,12 @@ assert_eq true "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-b")|.enabled
 
 rot=$(upstream_rotation_prepare up-line-b 300)
 assert_json "$rot" '.status=="parallel" and (.pending_uuid|type=="string")'
-assert_json "$(cat "$RM_XRAY_CONFIG")" '.inbounds[0].settings.clients|length==2'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds[0].settings.clients|length)==2'
 state_update_filter '(.upstreams[]|select(.upstream_id=="up-line-b")).rotation.deadline_epoch=0'
 reconciled=$(upstream_rotation_reconcile_expired)
 assert_json "$reconciled" '.expired_rotations==1 and .upstream_ids==["up-line-b"]'
 assert_json "$(cat "$RM_STATE_FILE")" '(.upstreams[]|select(.upstream_id=="up-line-b")|has("pending_uuid")|not)'
-assert_json "$(cat "$RM_XRAY_CONFIG")" '.inbounds[0].settings.clients|length==1'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds[0].settings.clients|length)==1'
 
 before_key=$(jq -r '.nodes[]|select(.node_id=="node-stageb")|.reality.password' "$RM_STATE_FILE")
 rotation=$(node_rotate_reality_keys node-stageb)
@@ -68,7 +68,7 @@ assert_ne "$before_key" "$after_key" 'REALITY key rotation did not change public
 assert_json "$rotation" '.status=="rotated" and .exports_invalidated==true and .server_private_key_exposed==false'
 
 node_delete node-stageb
-assert_json "$(cat "$RM_STATE_FILE")" '.nodes|length==0 and .upstreams|length==0 and .sources|length==0'
-assert_json "$(cat "$RM_XRAY_CONFIG")" '.inbounds|length==0'
+assert_json "$(cat "$RM_STATE_FILE")" '(.nodes|length)==0 and (.upstreams|length)==0 and (.sources|length)==0'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds|length)==0'
 
 pass 'Stage B node lifecycle, shared source references, guarded credentials and timed UUID rotation'
