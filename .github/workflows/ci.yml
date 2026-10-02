@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  stage-a-unit:
+  unit-and-static:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -23,3 +23,39 @@ jobs:
           sudo apt-get install -y --no-install-recommends jq iproute2 util-linux openssl curl unzip shellcheck
       - name: Run Stage-A unit and static checks
         run: ./tests/run.sh --unit-only
+
+  stage-b-real-xray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install profile-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq curl unzip
+      - name: Download pinned Xray and verify digest
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --connect-timeout 10 \
+            -o /tmp/xray.zip \
+            https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip
+          echo "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae  /tmp/xray.zip" | sha256sum -c -
+          mkdir -p /tmp/xray
+          unzip -q /tmp/xray.zip -d /tmp/xray
+          chmod +x /tmp/xray/xray
+          /tmp/xray/xray version
+      - name: Validate Stage-B server and client profile with real Xray
+        run: |
+          set -euo pipefail
+          kp="$(./protocols/vless-reality.sh generate_keypair /tmp/xray/xray)"
+          jq --arg priv "$(jq -r .private_key <<<"$kp")" \
+             --arg pub "$(jq -r .password <<<"$kp")" \
+             '.node.reality.private_key=$priv | .node.reality.password=$pub' \
+             tests/fixtures/stage-b-spec.json > /tmp/spec.json
+          ./protocols/vless-reality.sh validate /tmp/spec.json
+          ./protocols/vless-reality.sh render_server /tmp/spec.json > /tmp/server.json
+          /tmp/xray/xray run -test -config /tmp/server.json
+          ./protocols/vless-reality.sh render_client /tmp/spec.json up-ci > /tmp/outbound.json
+          jq -n --slurpfile outbound /tmp/outbound.json \
+            '{log:{loglevel:"none"},outbounds:[$outbound[0]]}' > /tmp/client.json
+          /tmp/xray/xray run -test -config /tmp/client.json
