@@ -243,7 +243,7 @@ vr_generate_keypair() {
   fi
   out=$("$xray" x25519 2>&1)
   private=$(awk -F': *' '/Private key:|PrivateKey:/ {print $2; exit}' <<<"$out")
-  public=$(awk -F': *' '/Password:|Public key:|PublicKey:/ {print $2; exit}' <<<"$out")
+  public=$(awk -F': *' '/Password( \(PublicKey\))?:|Public key:|PublicKey:/ {print $2; exit}' <<<"$out")
   if ! vr_valid_x25519_key "$private" || ! vr_valid_x25519_key "$public"; then
     rm_error '无法解析 Xray x25519 输出'
     return "$RM_RC_PRECONDITION"
