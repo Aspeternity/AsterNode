@@ -103,7 +103,7 @@ vr_validate() {
     uuid=$(jq -er ".upstreams[$i].uuid" "$f") || return "$RM_RC_PRECONDITION"
     upid=$(jq -er ".upstreams[$i].upstream_id" "$f") || return "$RM_RC_PRECONDITION"
     upname=$(jq -er ".upstreams[$i].name" "$f") || return "$RM_RC_PRECONDITION"
-    enabled=$(jq -r ".upstreams[$i].enabled // true" "$f")
+    enabled=$(jq -r "if .upstreams[$i]|has(\"enabled\") then .upstreams[$i].enabled else true end" "$f")
     vr_valid_uuid "$uuid" || { rm_error "线路机 $upid UUID 无效"; return "$RM_RC_PRECONDITION"; }
     [[ $upid =~ ^up-[A-Za-z0-9._-]{1,48}$ ]] || { rm_error 'upstream_id 格式错误'; return "$RM_RC_PRECONDITION"; }
     rm_valid_name "$upname" || { rm_error "线路机 $upid 名称格式错误"; return "$RM_RC_PRECONDITION"; }
@@ -129,7 +129,7 @@ vr_render_server() {
       protocol:"vless",
       settings:{
         decryption:"none",
-        clients:[.upstreams[] | select((.enabled // true)==true) |
+        clients:[.upstreams[] | select((if has("enabled") then .enabled else true end)==true) |
           {id:.uuid,flow:$flow,email:("rm:"+.upstream_id)}]
       },
       streamSettings:{
