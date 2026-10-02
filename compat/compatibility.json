@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-10-02",
+  "default_core_version": "v26.3.27",
+  "core": {
+    "xray": {
+      "v26.3.27": {
+        "channel": "stable",
+        "release_url": "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+        "source_commit_policy": "official GitHub release",
+        "profiles": ["xray-v26.3.27"],
+        "assets": {
+          "amd64": {
+            "name": "Xray-linux-64.zip",
+            "url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip",
+            "sha256": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae",
+            "size": 21136402
+          },
+          "arm64": {
+            "name": "Xray-linux-arm64-v8a.zip",
+            "url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-arm64-v8a.zip",
+            "sha256": "4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c",
+            "size": 19716427
+          }
+        },
+        "server_fields": {"transport_selector": "network", "raw_value": "raw", "reality_target": "target"},
+        "client_fields": {"reality_server_key": "password", "legacy_alias": "publicKey"},
+        "notes": [
+          "Pinned to GitHub latest non-prerelease release observed on 2026-10-02.",
+          "Xray v26.3.27 source accepts network=raw/tcp and both password/publicKey; this project emits network=raw and password."
+        ]
+      }
+    }
+  },
+  "client_profiles": {
+    "3x-ui": {
+      "status": "requires_real_vps_validation",
+      "json_profile": "xray-v26.3.27",
+      "share_uri_transport": "type=tcp",
+      "notes": ["Panel UI field labels vary by 3x-ui version; do not claim one-click compatibility until T25 is recorded."]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+[Unit]
+Description=Relay Manager managed Xray
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/relay-manager-xray/config.json
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/relay-manager firewall reconcile-expired
+User=rm-xray
+Group=rm-xray
+ExecStart=/usr/local/lib/relay-manager/core/current/xray run -c /etc/relay-manager-xray/config.json
+Restart=on-failure
+RestartSec=3s
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/relay-manager-xray
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
