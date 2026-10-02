@@ -107,8 +107,8 @@ node_prepare_spec() {
     | .node.protocol="vless-reality"
     | .node.flow=(.node.flow//$flow)
     | .node.access_mode=(.node.access_mode//"whitelist")
-    | .node.enabled=(.node.enabled//true)
-    | .node.autostart=(.node.autostart//true)
+    | .node.enabled=(if .node.enabled==null then true else .node.enabled end)
+    | .node.autostart=(if .node.autostart==null then true else .node.autostart end)
     | .node.reality=((.node.reality//{}) + {private_key:$priv,password:$pass,short_id:$sid})
     | .upstreams=(.upstreams//[])
   ' "$output" >"$tmp"
@@ -125,7 +125,7 @@ node_prepare_spec() {
       .upstreams[$i].uuid=$uuid
       | .upstreams[$i].upstream_id=$upid
       | .upstreams[$i].node_id=$nid
-      | .upstreams[$i].enabled=(.upstreams[$i].enabled//true)
+      | .upstreams[$i].enabled=(if .upstreams[$i].enabled==null then true else .upstreams[$i].enabled end)
       | .upstreams[$i].source_addresses=(.upstreams[$i].source_addresses//[])
     ' "$output" >"$tmp"
     mv "$tmp" "$output"
@@ -172,14 +172,14 @@ xray_render_state_config() {
   printf '%s\n' '{"log":{"loglevel":"warning","access":"none"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"blocked","protocol":"blackhole"}]}' >"$out"
   node_count=$(jq '.nodes|length' "$state_file")
   for ((i=0;i<node_count;i++)); do
-    enabled=$(jq -r ".nodes[$i].enabled // true" "$state_file")
+    enabled=$(jq -r "if .nodes[$i]|has(\"enabled\") then .nodes[$i].enabled else true end" "$state_file")
     [[ $enabled == true ]] || continue
     nid=$(jq -r ".nodes[$i].node_id" "$state_file")
     spec="$tmpdir/spec-$i.json"
     cfg="$tmpdir/cfg-$i.json"
     jq --arg nid "$nid" '
       (.nodes[]|select(.node_id==$nid)) as $n |
-      {node:$n,upstreams:[.upstreams[]|select(.node_id==$nid and ((.enabled//true)==true))]}
+      {node:$n,upstreams:[.upstreams[]|select(.node_id==$nid and ((if has("enabled") then .enabled else true end)==true))]}
       | .upstreams += [.upstreams[] | select((.pending_uuid? // "") != "") |
         .uuid=.pending_uuid | .upstream_id=(.upstream_id+"-pending")]
     ' "$state_file" >"$spec"
@@ -219,8 +219,8 @@ node_candidate_validate_ids() {
 node_candidate_validate_bindings() {
   local f=$1
   jq -e '
-    ([.nodes[]|select((.enabled//true)==true)|.listen_port] as $p | ($p|length)==($p|unique|length)) and
-    ([.nodes[]|select((.enabled//true)==true)|(.autostart//true)] | unique | length <= 1)
+    ([.nodes[]|select((if has("enabled") then .enabled else true end)==true)|.listen_port] as $p | ($p|length)==($p|unique|length)) and
+    ([.nodes[]|select((if has("enabled") then .enabled else true end)==true)|(if has("autostart") then .autostart else true end)] | unique | length <= 1)
   ' "$f" >/dev/null || {
     rm_error '启用节点之间存在重复监听端口，或共享 Xray 进程存在互相冲突的 autostart 设置'
     return "$RM_RC_PRECONDITION"
@@ -243,13 +243,13 @@ node_port_preflight_candidate() {
     fi
     rm_error "节点 $nid 端口 $port 已被非受管进程占用，拒绝覆盖。\n${lines:0:1000}"
     return "$RM_RC_PRECONDITION"
-  done < <(jq -r '.nodes[]|select((.enabled//true)==true)|[.node_id,(.listen_port|tostring)]|@tsv' "$f")
+  done < <(jq -r '.nodes[]|select((if has("enabled") then .enabled else true end)==true)|[.node_id,(.listen_port|tostring)]|@tsv' "$f")
 }
 
 node_print_change_summary() {
   local candidate=$1 type=$2
   printf '将执行 %s；共享 Xray 进程可能重启。受影响的启用节点：\n' "$type" >&2
-  jq -r '[.nodes[]|select((.enabled//true)==true)|.node_id] |
+  jq -r '[.nodes[]|select((if has("enabled") then .enabled else true end)==true)|.node_id] |
     if length==0 then "  (无)" else .[] | "  - "+. end' "$candidate" >&2
   printf '候选状态（凭据已隐藏）：\n' >&2
   jq '{
@@ -269,7 +269,7 @@ node_apply_candidate_state() {
   tmpdir=$(rm_safe_tmpdir) || return $?
   config="$tmpdir/config.json"
   xray_render_state_config "$candidate" "$config" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
-  enabled_count=$(jq '[.nodes[]|select((.enabled//true)==true)]|length' "$candidate")
+  enabled_count=$(jq '[.nodes[]|select((if has("enabled") then .enabled else true end)==true)]|length' "$candidate")
   core=$(xray_current_binary)
 
   if ((enabled_count>0)); then
@@ -335,7 +335,7 @@ node_apply_candidate_state() {
       return "$rc"
     fi
     autostart=$(jq -r '[.nodes[]|select((.enabled//true)==true)] |
-      if length==0 then true else (.[0].autostart // true) end' "$candidate")
+      if length==0 then true else (if .[0]|has("autostart") then .[0].autostart else true end) end' "$candidate")
     if [[ $service_mode == normal || $was_active == true ]]; then
       tx_mark_service_changed "$tx" "$RM_XRAY_SERVICE" || true
       if ! xray_service_enable_start "$autostart"; then
@@ -469,7 +469,7 @@ upstream_add_from_json() {
   uuid=$(jq -r '.uuid//empty' "$input")
   [[ -n $uuid ]] || uuid=$("$RM_PROTOCOL_VR" generate_uuid "$xray")
   jq --arg id "$upid" --arg nid "$nid" --arg uuid "$uuid" --arg now "$(rm_now)" '
-    . + {upstream_id:$id,node_id:$nid,uuid:$uuid,enabled:(.enabled//true),
+    . + {upstream_id:$id,node_id:$nid,uuid:$uuid,enabled:(if .enabled==null then true else .enabled end),
       source_addresses:(.source_addresses//[]),created_at:(.created_at//$now),updated_at:$now}
   ' "$input" >"$obj"
 
@@ -528,7 +528,7 @@ upstream_update_from_json() {
     (.upstreams[]|select(.upstream_id==$id)) * $patch[0] | .upstream_id=$id
   ' "$RM_STATE_FILE" >"$obj"
   name=$(jq -er '.name' "$obj") || { rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
-  enabled=$(jq -r '.enabled // true' "$obj")
+  enabled=$(jq -r 'if has("enabled") then .enabled else true end' "$obj")
   rm_valid_name "$name" || { rm_error '线路机名称格式错误'; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
   [[ $enabled == true || $enabled == false ]] || { rm_error 'enabled 必须是布尔值'; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
 
