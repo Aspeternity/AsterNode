@@ -181,9 +181,15 @@ xray_test_config_as_service_user() {
 
 xray_service_enable_start() {
   local enable=${1:-true}
-  [[ ${RM_TEST_MODE} == 1 ]] && { rm_systemctl daemon-reload; rm_systemctl restart "$RM_XRAY_SERVICE"; [[ $enable == true ]] && rm_systemctl enable "$RM_XRAY_SERVICE" || true; return 0; }
+  [[ $enable == true || $enable == false ]] || return "$RM_RC_PRECONDITION"
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    rm_systemctl daemon-reload
+    if [[ $enable == true ]]; then rm_systemctl enable "$RM_XRAY_SERVICE"; else rm_systemctl disable "$RM_XRAY_SERVICE"; fi
+    rm_systemctl restart "$RM_XRAY_SERVICE"
+    return 0
+  fi
   systemctl daemon-reload
-  if [[ $enable == true ]]; then systemctl enable "$RM_XRAY_SERVICE" >/dev/null; fi
+  if [[ $enable == true ]]; then systemctl enable "$RM_XRAY_SERVICE" >/dev/null; else systemctl disable "$RM_XRAY_SERVICE" >/dev/null; fi
   systemctl restart "$RM_XRAY_SERVICE"
   systemctl is-active --quiet "$RM_XRAY_SERVICE"
 }
