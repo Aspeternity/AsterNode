@@ -1,0 +1,52 @@
+name: Bootstrap Stage A source
+
+on:
+  push:
+    branches:
+      - dev/stage-a-foundation
+    paths:
+      - .github/workflows/bootstrap-stage-a.yml
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout bootstrap branch
+        uses: actions/checkout@v4
+        with:
+          ref: dev/stage-a-foundation
+          fetch-depth: 0
+
+      - name: Reconstruct and verify Stage A archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find bootstrap -maxdepth 1 -type f -name 'source.part??' | wc -l)"
+          test "$count" -eq 10
+          cat bootstrap/source.part?? | base64 --decode > /tmp/stage-a.zip
+          echo "e848eabce70cca26f49d5d82bad431020a211a870dc86da2f6727822dc88a71b  /tmp/stage-a.zip" | sha256sum -c -
+          unzip -t /tmp/stage-a.zip
+
+      - name: Replace bootstrap tree with Stage A source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/stage-a
+          mkdir -p /tmp/stage-a
+          unzip -q /tmp/stage-a.zip -d /tmp/stage-a
+          test -f /tmp/stage-a/relay-manager/relay-manager.sh
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
+          cp -a /tmp/stage-a/relay-manager/. .
+
+      - name: Commit imported source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: import Stage A foundation"
+          git push origin HEAD:dev/stage-a-foundation
