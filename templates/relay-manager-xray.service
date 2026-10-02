@@ -6,7 +6,6 @@ ConditionPathExists=/etc/relay-manager-xray/config.json
 
 [Service]
 Type=simple
-ExecStartPre=/usr/local/bin/relay-manager firewall reconcile-expired
 User=rm-xray
 Group=rm-xray
 ExecStart=/usr/local/lib/relay-manager/core/current/xray run -c /etc/relay-manager-xray/config.json
