@@ -575,7 +575,8 @@ upstream_show() {
 }
 
 upstream_update_from_json() {
-  local upid=$1 input=$2 tmpdir obj candidate count i addr norm t2 rc name enabled
+  local upid=$1 input=$2 source_mode=${3:-user} tmpdir obj candidate count i addr norm t2 rc name enabled
+  [[ $source_mode == user || $source_mode == transition ]] || return "$RM_RC_PRECONDITION"
   state_init >/dev/null
   state_get_upstream "$upid" >/dev/null || { rm_error '线路机不存在'; return "$RM_RC_PRECONDITION"; }
   rm_json_valid "$input" || return "$RM_RC_PRECONDITION"
@@ -583,6 +584,10 @@ upstream_update_from_json() {
     rm_error '线路机更新只允许 name/note/source_addresses/enabled'
     return "$RM_RC_PRECONDITION"
   }
+  if [[ $source_mode == user ]] && jq -e 'has("source_addresses")' "$input" >/dev/null; then
+    rm_error '已有线路机的来源地址必须使用 source-add/source-remove 分步变更，禁止一刀切替换。'
+    return "$RM_RC_PRECONDITION"
+  fi
 
   tmpdir=$(rm_safe_tmpdir) || return $?
   obj="$tmpdir/up.json"
@@ -677,7 +682,7 @@ upstream_source_add() {
     (.upstreams[]|select(.upstream_id==$id)|.source_addresses + [$addr] | unique) as $sources |
     {source_addresses:$sources}
   ' "$RM_STATE_FILE" >"$patch"
-  upstream_update_from_json "$upid" "$patch" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  upstream_update_from_json "$upid" "$patch" transition || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   jq -n --arg up "$upid" --argjson meta "$meta" \
     '{status:"added",upstream_id:$up,source:$meta,
       transition_guidance:"先保留旧来源并从新出口实际验证，确认后再移除旧来源。",
@@ -712,7 +717,7 @@ upstream_source_remove() {
     (.upstreams[]|select(.upstream_id==$id)|[.source_addresses[]|select(.!=$addr)] | unique) as $sources |
     {source_addresses:$sources}
   ' "$RM_STATE_FILE" >"$patch"
-  upstream_update_from_json "$upid" "$patch" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  upstream_update_from_json "$upid" "$patch" transition || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   remaining=$(jq -r --arg id "$upid" '.upstreams[]|select(.upstream_id==$id)|.source_addresses|length' "$RM_STATE_FILE")
   jq -n --arg up "$upid" --arg addr "$normalized" --argjson remaining "$remaining" \
     '{status:"removed",upstream_id:$up,address:$addr,remaining_sources:$remaining,

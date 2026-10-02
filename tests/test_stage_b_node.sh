@@ -57,13 +57,30 @@ assert_eq "$state_before_drift" "$(rm_sha256_file "$RM_STATE_FILE")" 'drift guar
 cp "$good_config" "$RM_XRAY_CONFIG"
 
 patch="$root/up-patch.json"
-jq -n '{note:"new-egress",source_addresses:["198.51.100.10"],enabled:true}' >"$patch"
+jq -n '{note:"new-egress",enabled:true}' >"$patch"
 upstream_update_from_json up-line-a "$patch"
-assert_eq 198.51.100.10 "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.source_addresses[0]' "$RM_STATE_FILE")"
+assert_eq 198.51.100.9 "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.source_addresses[0]' "$RM_STATE_FILE")"
+
+unsafe_source_replace="$root/unsafe-source-replace.json"
+jq -n '{source_addresses:["198.51.100.10"]}' >"$unsafe_source_replace"
+set +e
+upstream_update_from_json up-line-a "$unsafe_source_replace" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 10 "$rc" 'direct source-address replacement bypassed staged transition'
+assert_eq 198.51.100.9 "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.source_addresses[0]' "$RM_STATE_FILE")"
+
+source_new=$(upstream_source_add up-line-a 198.51.100.10)
+assert_json "$source_new" '.status=="added" and .source.address=="198.51.100.10"'
 assert_json "$(cat "$RM_STATE_FILE")" '
-  (.sources|length)==2 and
-  ([.sources[]|select(.address=="198.51.100.10")][0].upstream_ids)==["up-line-a"] and
-  ([.sources[]|select(.address=="198.51.100.9")][0].upstream_ids)==["up-line-b"]
+  ([.sources[]|select(.address=="198.51.100.9")][0].upstream_ids|sort)==["up-line-a","up-line-b"] and
+  ([.sources[]|select(.address=="198.51.100.10")][0].upstream_ids)==["up-line-a"]
+'
+source_old_remove=$(upstream_source_remove up-line-a 198.51.100.9)
+assert_json "$source_old_remove" '.status=="removed" and .remaining_sources==1'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  ([.sources[]|select(.address=="198.51.100.9")][0].upstream_ids)==["up-line-b"] and
+  ([.sources[]|select(.address=="198.51.100.10")][0].upstream_ids)==["up-line-a"]
 '
 
 ipv6_norm=$(rm_normalize_ip_or_cidr 2001:db8::20)
