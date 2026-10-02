@@ -94,7 +94,6 @@ node_cmd() {
       ;;
     delete)
       mutation_guard || return $?
-      fw_remove_node_rules "$1" || true
       node_delete "$1"
       ;;
     rotate-reality)
