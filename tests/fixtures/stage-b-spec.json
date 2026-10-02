@@ -1,0 +1,30 @@
+{
+  "node": {
+    "node_id": "node-ci",
+    "name": "ci-node",
+    "listen_address": "0.0.0.0",
+    "listen_port": 443,
+    "public_host": "203.0.113.10",
+    "public_port": 443,
+    "target": "www.microsoft.com:443",
+    "sni": "www.microsoft.com",
+    "access_mode": "whitelist",
+    "flow": "xtls-rprx-vision",
+    "enabled": true,
+    "autostart": true,
+    "reality": {
+      "private_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "password": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "short_id": "0011223344556677"
+    }
+  },
+  "upstreams": [
+    {
+      "upstream_id": "up-ci",
+      "name": "line-ci",
+      "uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "enabled": true,
+      "source_addresses": ["198.51.100.9"]
+    }
+  ]
+}
