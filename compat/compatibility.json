@@ -1,6 +1,5 @@
 {
   "schema_version": 1,
-  "verified_on": "2026-10-02",
   "default_core_version": "v26.3.27",
   "core": {
     "xray": {
@@ -8,7 +7,9 @@
         "channel": "stable",
         "release_url": "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
         "source_commit_policy": "official GitHub release",
-        "profiles": ["xray-v26.3.27"],
+        "profiles": [
+          "xray-v26.3.27"
+        ],
         "assets": {
           "amd64": {
             "name": "Xray-linux-64.zip",
@@ -23,8 +24,15 @@
             "size": 19716427
           }
         },
-        "server_fields": {"transport_selector": "network", "raw_value": "raw", "reality_target": "target"},
-        "client_fields": {"reality_server_key": "password", "legacy_alias": "publicKey"},
+        "server_fields": {
+          "transport_selector": "network",
+          "raw_value": "raw",
+          "reality_target": "target"
+        },
+        "client_fields": {
+          "reality_server_key": "password",
+          "legacy_alias": "publicKey"
+        },
         "notes": [
           "Pinned to GitHub latest non-prerelease release observed on 2026-10-02.",
           "Xray v26.3.27 source accepts network=raw/tcp and both password/publicKey; this project emits network=raw and password."
@@ -37,7 +45,29 @@
       "status": "requires_real_vps_validation",
       "json_profile": "xray-v26.3.27",
       "share_uri_transport": "type=tcp",
-      "notes": ["Panel UI field labels vary by 3x-ui version; do not claim one-click compatibility until T25 is recorded."]
+      "notes": [
+        "Panel UI field labels vary by 3x-ui version; do not claim one-click compatibility until T25 is recorded."
+      ]
+    }
+  },
+  "metadata_checked_on": "2026-10-02",
+  "validation": {
+    "amd64_config_ci": {
+      "status": "passed",
+      "github_actions_run": 59,
+      "commit": "0a5be45ae50b56e46729f65c50ea01020f9bfa22",
+      "xray_version": "26.3.27",
+      "server_config_parse": "passed",
+      "client_config_parse": "passed"
+    },
+    "arm64_execution": {
+      "status": "unverified_real_execution"
+    },
+    "t24_client_connection": {
+      "status": "unverified"
+    },
+    "t25_3xui_end_to_end": {
+      "status": "unverified"
     }
   }
 }

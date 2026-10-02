@@ -11,6 +11,10 @@
 - Fixed jq boolean-default semantics so explicit `false` is not treated as an absent value.
 - Added managed-config drift detection and conservative refusal to overwrite external edits.
 - Hardened archive symlink checks and restored executable-mode regression coverage.
+- Added staged upstream source migration (`source-add` / verify / `source-remove`) and normalized IPv4/IPv6/CIDR reference accounting.
+- Added bounded Target candidate probing and a credential-redacted 0600 diagnostic bundle with no automatic upload.
+- Avoided Xray restarts for metadata-only/source-only state changes while watching the managed config digest inside the transaction.
+- CI #59 passed with 18 tests, Bash syntax, ShellCheck, pinned Xray v26.3.27 server/client config parsing, and zero skips.
 - Stage B remains pre-production until real VPS/systemd/network/T24/T25 evidence is recorded.
 
 ## 0.1.0-dev - 2026-10-02

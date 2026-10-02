@@ -18,8 +18,10 @@ Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。�
 - 外部手工修改运行配置的摘要漂移检测：发现漂移后拒绝静默覆盖。
 - 参数表、分享 URI、单个 outbound JSON 与 3x-ui 字段/路由合并说明；服务端 privateKey 不导出。
 - Target 候选与受控探测，以及 D1-D4 分层诊断框架。
+- 线路来源地址采用 `source-add → 实际验证 → source-remove` 的迁移模型，避免直接整组替换。
+- 纯元数据/来源状态更新不再无意义重启 Xray，同时将受管配置摘要纳入事务观察，发现外部漂移立即停止。
 
-`dev/stage-b-node` 的 CI 同时运行隔离单元/静态检查和固定 Xray v26.3.27 的服务端、客户端配置测试。配置测试通过不等于线路 VPS 的真实认证和代理请求已经通过。
+`dev/stage-b-node-continuation` 当前稳定基线的 CI 同时运行隔离单元/静态检查和固定 Xray v26.3.27 的服务端、客户端配置测试。CI #59 在提交 `0a5be45a` 上得到 `18 passed / 0 failed / 0 skipped`，ShellCheck 与真实 Xray 配置解析均通过。配置测试通过不等于线路 VPS 的真实认证和代理请求已经通过。
 
 ## 只读使用
 

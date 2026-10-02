@@ -1,69 +1,81 @@
-# Relay Manager 测试报告
+# AsterNode 测试报告
 
-- 报告日期：2026-10-02
-- 管理器版本：0.1.0-dev
-- 当前阶段：A 基础
-- 测试位置：隔离开发容器
-- 开发容器：Debian 13 (trixie), x86_64
-- systemd：容器内未运行
+- 报告日期：2026-10-03
+- 管理器版本：0.2.0-dev
+- 当前阶段：B 节点（自动化/配置级已进入稳定基线；真实 VPS 门槛未完成）
+- 稳定基线提交：`0a5be45ae50b56e46729f65c50ea01020f9bfa22`
+- GitHub Actions：#59
 - 生产凭据：未使用
 
-## 阶段 A 自动化结果
+## CI #59 结果
 
-执行命令：
-
-```bash
-./tests/run.sh
-```
-
-最近一次结果：
+GitHub Actions #59 在 `dev/stage-b-node-continuation` 上完成：
 
 ```text
-passed=11 failed=0 skipped=1
+unit-and-static     success
+stage-b-real-xray   success
+
+Summary: passed=18 failed=0 skipped=0
+bash -n: PASS
+shellcheck: PASS
+Xray v26.3.27 server config: Configuration OK
+Xray v26.3.27 client config: Configuration OK
 ```
 
-跳过项：本地开发容器未安装 `shellcheck`。仓库 CI 已配置在 Ubuntu runner 安装 ShellCheck 并执行 `shellcheck -S error -x`；在 CI 真正运行成功前，不把 ShellCheck 记为已通过。
+固定 Xray 资产：
 
-| case_id | 需求 | 前置状态 / 操作 | 预期 | 实际 | 结果 |
-|---|---|---|---|---|---|
-| A01 | ENV-01/02 | `RM_ROOT` Debian 12 fixture 运行 `system_probe_fast`，前后快照 | 不写文件；读取 OS/内存/systemd/包管理信息；网络探测标未验证 | fixture 前后完全一致 | 通过 |
-| A02 | UX-03 | 无控制 TTY (`setsid`) 执行 `quick-deploy` | 退出码 10；不创建受管状态 | 符合 | 通过 |
-| A03 | ARC-02 | `protocols/vless-reality.sh describe` | 声明 7 个规定接口 | 7 个接口齐全 | 通过 |
-| A04 | DATA-01/03 | 初始化状态两次、共享来源引用增删、非法重复 ID 更新 | 幂等；共享引用正确；非法状态拒绝且原文件不变 | 符合 | 通过 |
-| A05 | ENV-01 | 已存在 state + committed transaction 后运行 `status`，前后快照 | status 仍完全只读 | 符合 | 通过 |
-| A06 | SEC-01 | `RM_ROOT/etc` 设置为指向外部目录的符号链接后初始化状态 | 拒绝写入，外部目录不产生文件 | 符合 | 通过 |
-| A07 | TX-01/03/05 | staged file 应用、提交、回滚；检查 transaction/snapshot/staged 权限 | 原子替换；0600/0700；可恢复旧内容 | 符合 | 通过 |
-| A08 | TX-01/05 | 确认后、应用前人工修改目标 | 拒绝过期计划，不覆盖外部变化 | 返回 10，外部内容保留 | 通过 |
-| A09 | TX-04 | APPLIED_PENDING 启动恢复；模拟 mv 后日志未更新的 kill-window | 恢复最后已知内容 | 两种情况均回滚 | 通过 |
-| A10 | TX-05 | 应用后第三方再次改文件，再请求回滚 | 不覆盖第三方内容，标 NEEDS_RECOVERY | 返回 21，第三方内容保留 | 通过 |
-| A11 | TX-02 | 一个进程持有 flock，另一个开始事务 | 后者等待；并发事务不能同时应用 | 等待约 1 秒；冲突事务返回 10 | 通过 |
-| A12 | 安装入口/幂等 | `RM_ROOT` 下两次 `install.sh --install-source` | 单一版本目录、内容稳定、post-status 不创建 state | 符合 | 通过 |
+- amd64: `Xray-linux-64.zip`
+- SHA-256: `23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae`
+- CI 实际输出：`Xray 26.3.27 ... linux/amd64`
 
-> `tests/run.sh` 的“passed”按测试脚本和静态检查项计数；上表将一个脚本内的多个安全断言拆成了独立证据项，因此编号数量与 runner 的 passed 数不要求一一相等。
+这里的“真实 Xray”仅表示 CI 下载官方固定摘要二进制并让服务端/客户端 JSON 通过 `xray run -test -config`；**不等于 T24/T25 的真实网络连接。**
+
+## Stage B 自动化证据
+
+| case_id | 需求 | 自动化内容 | 结果 |
+|---|---|---|---|
+| B01 | NODE-01/03 | VLESS + RAW/TCP + REALITY 渲染、UUID/X25519/Short ID、IPv6 URI、重复 UUID/回环 Target 拒绝 | 通过 |
+| B02 | NODE-04 / EXPORT-03 | 固定 Xray v26.3.27 服务端/客户端配置真实核心解析 | 通过 |
+| B03 | NODE-05/08 | rm-xray 单独用户、systemd 模板、维护 timer、归档符号链接拒绝 | 通过（隔离） |
+| B04 | NODE-06/07 / UP-01/02/04 | 多线路机、共享来源引用、启停删除、最后节点与无凭据边界 | 通过 |
+| B05 | UP-03/05/06 | UUID 并行轮换/到期回收、REALITY 密钥轮换、旧导出撤销 | 通过（逻辑） |
+| B06 | UP-07 | source-add → source-remove 迁移、IPv4/IPv6/CIDR 规范化、共享引用计数 | 通过（逻辑） |
+| B07 | DATA-03 / TX-01 | 受管 Xray 配置摘要漂移拒绝静默覆盖；state-only 事务观察运行配置 | 通过 |
+| B08 | EXPORT-01/02/04 | 参数表、单 outbound、分享 URI、3x-ui 字段映射、0600、privateKey 不导出 | 通过 |
+| B09 | TARGET-* | Target 格式/回环拒绝、有限超时、重复握手、受控并发、非 200 不自动判坏 | 通过（隔离/失败路径） |
+| B10 | DIAG-01/02 | D1-D4 分层、旧 D4 证据失效、0600 脱敏诊断包、默认不联网/不上传 | 通过 |
+| B11 | SEC-01 | 危险 ZIP 路径/符号链接、凭据泄漏回归 | 通过 |
+| B12 | TEST-01 | Bash syntax + ShellCheck + 全部 unit 脚本 | 通过 |
 
 ## T01-T36 当前结论
 
-开发规格要求 T01-T36 作为首版最终门槛。阶段 A **没有**将 fixture/unit test 冒充真实 VPS 证据。
+自动化证据不能替代规格要求的真实 VPS 证据。当前与 Stage B 直接相关的状态：
 
-| 用例 | 当前结论 | 原因 / 已有证据 |
+| 用例 | 当前结论 | 说明 |
 |---|---|---|
-| T01 | 部分验证，未最终通过 | A01 证明 fixture 下只读；仍需受支持新机实测 |
-| T02 | 部分验证，未最终通过 | 状态/安装幂等已测；UUID/密钥/规则幂等属于 B/C |
-| T03 | 部分验证，未最终通过 | 非 TTY 已测；完整交互取消路径仍需各模块覆盖 |
-| T04 | 未最终执行 | 环境检测已识别相关进程；真实外部 Xray/3x-ui/Nginx 不接管需 B 实测 |
-| T05-T28 | 未执行 | 属于 B/C 或真实系统集成阶段 |
-| T29 | 部分验证，未最终通过 | A11 验证锁与冲突事务；仍需真实并发业务事务 |
-| T30 | 未执行 | 磁盘/inode/包管理锁故障注入待系统集成 |
-| T31 | 部分验证，未最终通过 | A08/A10 验证事务级漂移；运行 Xray 配置漂移待 B |
-| T32 | 部分验证，未最终通过 | 符号链接/受管路径已测；恶意归档和更多输入在 D 继续 |
-| T33-T36 | 未执行 | 属于 D 与长时实测 |
+| T02 | 部分验证 | 节点重跑、凭据保护、来源引用与导出失效已自动化；真实服务规则幂等仍待 VPS |
+| T04 | 未最终通过 | 代码会拒绝接管外部 Xray；真实外部 Xray/3x-ui/Nginx 共存需 VPS |
+| T18 | 未执行 | IPv4/IPv6 白名单属于 Stage C，但 Stage B 已完成地址模型 |
+| T21 | 部分验证 | 两线路机共享出口、独立 UUID/引用模型通过；真实 NAT 出口未验证 |
+| T22 | 部分验证 | 删除/撤销逻辑通过；“现有连接可能持续、新连接失败”需真实连接验证 |
+| T23 | 部分验证 | Target 失败/格式/回环自动化通过；真实候选质量需在目标 VPS 测量 |
+| T24 | **未最终通过** | URI/outbound 可被固定 Xray 解析；尚未由真实客户端建立连接 |
+| T25 | **未执行** | 仍需至少一台真实 3x-ui 线路 VPS 完成认证、代理请求与落地出口核对 |
+| T27 | 部分验证 | 固定 Xray 下载摘要/归档安全有覆盖；正式发行签名归 Stage D |
+| T28 | 部分验证 | candidate 配置失败/事务回滚有自动化；真实 systemd 启动失败回滚待 VPS |
+| T31 | 部分验证 | 运行配置外部漂移检测已自动化；真实服务现场仍需对账测试 |
+| T35 | 部分验证 | 导出/诊断凭据脱敏与权限有自动化；长期增长/日志轮转待 D |
+| T36 | 未执行 | 资源档与长时运行仍需真实环境 |
 
-## 未执行的真实环境矩阵
+## Stage B 实机门槛
 
-以下仍必须在可恢复 VM / 专用测试 VPS 完成，当前不能声明支持证据已经满足：
+阶段 B 还不能宣布最终通过，剩余阻断项集中在真实 VPS：
 
-- Debian 12/13、Ubuntu 22.04/24.04 × x86_64/ARM64。
-- 普通 `ssh.service` 与实际支持的 `ssh.socket`。
-- IPv4、双栈、IPv6-only、NAT、复杂/已有 UFW。
-- 256 MiB / 512 MiB / 1 GiB 资源档。
-- 至少一台真实 3x-ui 线路 VPS 的 REALITY 认证与代理请求。
+1. 真实 systemd 下安装/启动/重启/开机自启与 rm-xray 权限。
+2. IPv4、双栈、IPv6-only、NAT 的监听和外部端点行为。
+3. 外部 Xray/3x-ui/Nginx 共存时不接管、不杀进程。
+4. T24：真实客户端使用生成 URI / outbound 建连。
+5. T25：真实 3x-ui 线路 VPS → 落地节点 → 代理请求 → 落地出口核对。
+6. UUID 删除/轮换后的新连接拒绝与既有连接语义。
+
+具体执行与记录格式见 `docs/STAGE_B_REAL_VPS_CHECKLIST.md`。
