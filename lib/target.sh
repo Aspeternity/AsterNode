@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Versioned REALITY target probing; read-only and bounded.
 # shellcheck source=lib/common.sh
-source "$(cd -- "$(dirname -- "\${BASH_SOURCE[0]}")" && pwd)/common.sh"
-RM_TARGETS_FILE="$(cd -- "$(dirname -- "\${BASH_SOURCE[0]}")/.." && pwd)/compat/targets.json"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+RM_TARGETS_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/compat/targets.json"
 
 target_split() {
   rm_split_host_port "$1"
