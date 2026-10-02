@@ -25,6 +25,13 @@ assert_json "$(cat "$RM_STATE_FILE")" '
 assert_file_mode "$RM_XRAY_CONFIG" 640
 assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds|length)==1 and (.inbounds[0].settings.clients|length)==2'
 
+valid_replace="$root/valid-replace.json"
+jq '.node.name="sg-node-updated"' "$spec" >"$valid_replace"
+valid_result=$(node_create_or_replace_spec "$valid_replace" upsert)
+assert_json "$valid_result" '.node_id=="node-stageb"'
+assert_eq sg-node-updated "$(jq -r '.nodes[]|select(.node_id=="node-stageb")|.name' "$RM_STATE_FILE")" \
+  'valid node upsert was rejected by credential guard'
+
 bad="$root/bad-replace.json"
 jq '.upstreams[0].uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"' "$spec" >"$bad"
 set +e
