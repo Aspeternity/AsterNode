@@ -17,9 +17,9 @@ created=$(node_create_or_replace_spec "$spec" create)
 assert_json "$created" '.node_id=="node-stageb" and (.upstream_ids|sort)==["up-line-a","up-line-b"]'
 assert_true state_validate
 assert_json "$(cat "$RM_STATE_FILE")" '
-  .nodes|length==1 and
-  .upstreams|length==2 and
-  .sources|length==1 and
+  (.nodes|length)==1 and
+  (.upstreams|length)==2 and
+  (.sources|length)==1 and
   (.sources[0].upstream_ids|sort)==["up-line-a","up-line-b"]
 '
 assert_file_mode "$RM_XRAY_CONFIG" 640
