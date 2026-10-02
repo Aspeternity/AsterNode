@@ -51,7 +51,7 @@ diag_d2() {
     s=$(status_obj unverified service '测试模式未读取真实 systemd')
   elif systemctl is-active --quiet "$RM_XRAY_SERVICE" 2>/dev/null; then
     s=$(status_obj normal service "$RM_XRAY_SERVICE active")
-  elif jq -e '[.nodes[]|select((.enabled//true)==true)]|length>0' "$RM_STATE_FILE" >/dev/null; then
+  elif jq -e '[.nodes[]|select((if has("enabled") then .enabled else true end)==true)]|length>0' "$RM_STATE_FILE" >/dev/null; then
     s=$(status_obj abnormal service "$RM_XRAY_SERVICE inactive")
   else
     s=$(status_obj not_applicable service '无启用节点')
@@ -74,7 +74,7 @@ diag_d2() {
       if [[ -n $lines ]]; then s=$(status_obj normal listener "$nid:$port"); else s=$(status_obj abnormal listener "$nid:$port 未监听"); fi
     fi
     items=$(jq -c --argjson x "$s" '.+[$x]' <<<"$items")
-  done < <(jq -r '.nodes[]|[.node_id,(.listen_port|tostring),((.enabled//true)|tostring)]|@tsv' "$RM_STATE_FILE")
+  done < <(jq -r '.nodes[]|[.node_id,(.listen_port|tostring),((if has("enabled") then .enabled else true end)|tostring)]|@tsv' "$RM_STATE_FILE")
   printf '%s\n' "$items"
 }
 
@@ -91,7 +91,7 @@ diag_d3() {
       *) x=$(status_obj unverified target-probe "$nid $detail");;
     esac
     items=$(jq -c --argjson x "$x" '.+[$x]' <<<"$items")
-  done < <(jq -r '.nodes[]|select((.enabled//true)==true)|[.node_id,.target,.sni]|@tsv' "$RM_STATE_FILE")
+  done < <(jq -r '.nodes[]|select((if has("enabled") then .enabled else true end)==true)|[.node_id,.target,.sni]|@tsv' "$RM_STATE_FILE")
 
   fw=$(fw_status_json)
   if jq -e '.installed==true and .active==true' <<<"$fw" >/dev/null; then
@@ -130,7 +130,7 @@ diag_d4() {
       s=$(jq -n --arg node "$node" --arg up "$up" '{status:"unverified",check:"line-end-to-end",node_id:$node,upstream_id:$up,detail:"需要从指定线路 VPS 建立真实 REALITY 连接并执行代理请求；本机监听不能代替 T25"}')
     fi
     items=$(jq -c --argjson x "$s" '.+[$x]' <<<"$items")
-  done < <(jq -r '.upstreams[]|select((.enabled//true)==true)|[.node_id,.upstream_id]|@tsv' "$RM_STATE_FILE")
+  done < <(jq -r '.upstreams[]|select((if has("enabled") then .enabled else true end)==true)|[.node_id,.upstream_id]|@tsv' "$RM_STATE_FILE")
   printf '%s\n' "$items"
 }
 
