@@ -48,9 +48,8 @@ quick_deploy() {
   rm_read_tty upname '线路机名称: '; rm_valid_name "$upname" || { rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
   rm_read_tty source '线路机实际出口 IP/CIDR（白名单模式必填）: '
   jq -n --slurpfile n "$nodepart" --arg upname "$upname" --arg source "$source" '{node:$n[0],upstreams:[{name:$upname,source_addresses:(if $source=="" then [] else [$source] end)}]}' >"$spec"
-  printf '将应用以下非秘密配置：\n' >&2; jq '{node:.node,upstreams:[.upstreams[]|{name,source_addresses}]}' "$spec"
-  rm_confirm '确认创建节点?' || { rm -rf "$tmpdir"; return "$RM_RC_CANCEL"; }
-  local created nid upid; created=$(node_create_or_replace_spec "$spec" create) || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  local created nid upid
+  created=$(node_create_or_replace_spec "$spec" create) || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   nid=$(jq -r .node_id <<<"$created"); upid=$(jq -r '.upstream_ids[0]' <<<"$created")
   if [[ -n $source && $(jq -r '.node.access_mode' "$spec") == whitelist ]]; then
     local fws; fws=$(fw_status_json); if jq -e '.installed and .active and (.complex_environment|not)' <<<"$fws" >/dev/null; then
@@ -64,29 +63,106 @@ quick_deploy() {
 node_cmd() {
   local sub=${1:-list}; shift || true
   case "$sub" in
-    list) [[ -f $RM_STATE_FILE ]] || { printf '[]\n'; return; }; jq '.nodes' "$RM_STATE_FILE";;
-    create) mutation_guard; [[ -f ${1:-} ]] || return "$RM_RC_PRECONDITION"; node_create_or_replace_spec "$1" create;;
-    replace) mutation_guard; [[ -f ${1:-} ]] || return "$RM_RC_PRECONDITION"; node_create_or_replace_spec "$1" upsert;;
-    enable) mutation_guard; node_set_enabled "$1" true;;
-    disable) mutation_guard; node_set_enabled "$1" false;;
-    delete) mutation_guard; fw_remove_node_rules "$1" || true; node_delete "$1";;
-    *) return "$RM_RC_PRECONDITION";;
+    list)
+      [[ -f $RM_STATE_FILE ]] || { printf '[]\n'; return; }
+      state_validate || return "$RM_RC_PRECONDITION"
+      jq '[.nodes[] | del(.reality.private_key,.reality.password,.reality.short_id) |
+        .reality.credentials_hidden=true]' "$RM_STATE_FILE"
+      ;;
+    show)
+      state_init >/dev/null
+      node_show "$1" | jq 'del(.reality.private_key,.reality.password,.reality.short_id) |
+        .reality.credentials_hidden=true'
+      ;;
+    create)
+      mutation_guard || return $?
+      [[ -f ${1:-} ]] || return "$RM_RC_PRECONDITION"
+      node_create_or_replace_spec "$1" create
+      ;;
+    replace)
+      mutation_guard || return $?
+      [[ -f ${1:-} ]] || return "$RM_RC_PRECONDITION"
+      node_create_or_replace_spec "$1" upsert
+      ;;
+    enable)
+      mutation_guard || return $?
+      node_set_enabled "$1" true
+      ;;
+    disable)
+      mutation_guard || return $?
+      node_set_enabled "$1" false
+      ;;
+    delete)
+      mutation_guard || return $?
+      fw_remove_node_rules "$1" || true
+      node_delete "$1"
+      ;;
+    rotate-reality)
+      mutation_guard || return $?
+      node_rotate_reality_keys "$1"
+      ;;
+    *)
+      return "$RM_RC_PRECONDITION"
+      ;;
   esac
 }
 
 upstream_cmd() {
   local sub=${1:-list}; shift || true
   case "$sub" in
-    list) [[ -f $RM_STATE_FILE ]] || { printf '[]\n'; return; }; state_validate || return "$RM_RC_PRECONDITION"; jq '.upstreams' "$RM_STATE_FILE";;
-    add) mutation_guard; upstream_add_from_json "$1" "$2";;
-    delete) mutation_guard; export_invalidate_upstream "$1"; upstream_delete "$1";;
-    rotate-prepare) mutation_guard; upstream_rotation_prepare "$1" "${2:-86400}";;
-    rotate-commit) mutation_guard; upstream_rotation_commit "$1";;
-    rotate-cancel) mutation_guard; upstream_rotation_cancel "$1";;
-    *) return "$RM_RC_PRECONDITION";;
+    list)
+      [[ -f $RM_STATE_FILE ]] || { printf '[]\n'; return; }
+      state_validate || return "$RM_RC_PRECONDITION"
+      jq '[.upstreams[] |
+        del(.uuid,.pending_uuid) |
+        .credentials_hidden=true |
+        .has_pending_rotation=((.rotation? // null)!=null)]' "$RM_STATE_FILE"
+      ;;
+    show)
+      state_init >/dev/null
+      upstream_show "$1" | jq 'del(.uuid,.pending_uuid) |
+        .credentials_hidden=true |
+        .has_pending_rotation=((.rotation? // null)!=null)'
+      ;;
+    add)
+      mutation_guard || return $?
+      [[ -n ${1:-} && -f ${2:-} ]] || return "$RM_RC_PRECONDITION"
+      upstream_add_from_json "$1" "$2"
+      ;;
+    update)
+      mutation_guard || return $?
+      [[ -n ${1:-} && -f ${2:-} ]] || return "$RM_RC_PRECONDITION"
+      upstream_update_from_json "$1" "$2"
+      ;;
+    enable)
+      mutation_guard || return $?
+      upstream_set_enabled "$1" true
+      ;;
+    disable)
+      mutation_guard || return $?
+      upstream_set_enabled "$1" false
+      ;;
+    delete)
+      mutation_guard || return $?
+      upstream_delete "$1"
+      ;;
+    rotate-prepare)
+      mutation_guard || return $?
+      upstream_rotation_prepare "$1" "${2:-86400}"
+      ;;
+    rotate-commit)
+      mutation_guard || return $?
+      upstream_rotation_commit "$1"
+      ;;
+    rotate-cancel)
+      mutation_guard || return $?
+      upstream_rotation_cancel "$1"
+      ;;
+    *)
+      return "$RM_RC_PRECONDITION"
+      ;;
   esac
 }
-
 ssh_cmd() {
   local sub=${1:-status}; shift || true
   case "$sub" in
@@ -164,16 +240,20 @@ MENU
 
 help_cmd() {
   cat <<'HELP'
-Relay Manager CLI
+AsterNode CLI
   relay-manager                      交互菜单
   relay-manager env                  只读环境体检
   relay-manager status               只读状态
   relay-manager quick-deploy         交互快速部署
   relay-manager doctor               D1-D4 分层诊断
-  relay-manager target probe|list    Target 探测
-  relay-manager core install         安装兼容矩阵固定 Xray
-  relay-manager node list|create FILE|replace FILE|enable ID|disable ID|delete ID
-  relay-manager upstream list|add NODE FILE|delete ID|rotate-prepare ID [SEC]|rotate-commit ID|rotate-cancel ID
+  relay-manager doctor record-d4 NODE UPSTREAM EXIT_IP PANEL_VERSION CORE_VERSION [ROUTE_NOTE]
+  relay-manager target candidates    查看版本内置 Target 候选（不联网）
+  relay-manager target probe-candidates  对候选执行受控联网探测
+  relay-manager target probe TARGET SNI  探测指定 Target
+  relay-manager core install [VERSION]   安装兼容矩阵固定 Xray
+  relay-manager node list|show ID|create FILE|replace FILE|enable ID|disable ID|delete ID|rotate-reality ID
+  relay-manager upstream list|show ID|add NODE FILE|update ID FILE|enable ID|disable ID|delete ID
+                    rotate-prepare ID [SEC]|rotate-commit ID|rotate-cancel ID
   relay-manager export UPSTREAM [current|pending] [--show]
   relay-manager firewall status|apply NODE SOURCE...|remove-node NODE|temp-open NODE [MIN]|expire-temp NODE
   relay-manager ssh status [USER]|add-key USER FILE|migrate-port PORT|remove-old-port PORT
@@ -183,18 +263,98 @@ Relay Manager CLI
   relay-manager backup list|create [config|upgrade]|restore ID|restore-nodes ID
   relay-manager update status|core VERSION|manager-package FILE [SHA256]|rollback-manager
   relay-manager remove manager|backups|exports
+  relay-manager reconcile            systemd 维护任务：恢复未完成事务并撤销过期 UUID 轮换
 
-修改命令要求 root + TTY。退出码：0 成功，2 取消，10 输入/前置条件，20 应用失败已恢复，
-21 恢复不完整，30 网络/下载失败。完整凭据仅在 export ... --show 时主动显示。
+修改命令要求 root + TTY；reconcile 仅供 root/systemd 非交互执行。
+退出码：0 成功，2 取消，10 输入/前置条件，20 应用失败已恢复，21 恢复不完整，30 网络/下载失败。
+默认 list/status/doctor 不显示 UUID、REALITY 密钥或完整 URI；完整线路凭据仅在 export ... --show 主动显示。
 HELP
 }
-
 cmd=${1:-}; [[ $# -gt 0 ]] && shift || true
 case "$cmd" in
-  '') interactive_menu;; env) system_probe_fast "${1:-root}" "${2:-127.0.0.1}";; status) status_cmd;; quick-deploy) quick_deploy;; doctor) "$BASE_DIR/diagnostics.sh" doctor;;
-  target) sub=${1:-list}; shift || true; case "$sub" in list) target_probe_candidates;; probe) target_probe "$1" "$2";; *) exit 10;; esac;;
-  core) sub=${1:-}; shift || true; case "$sub" in install) mutation_guard; xray_core_install "${1:-$(xray_default_version)}"; xray_service_install;; *) exit 10;; esac;;
-  node) node_cmd "$@";; upstream) upstream_cmd "$@";; export) state_init >/dev/null; show=false; [[ ${3:-} == --show ]] && show=true; export_upstream "$1" "${2:-current}" "$show";;
-  firewall) firewall_cmd "$@";; ssh) ssh_cmd "$@";; fail2ban) fail2ban_cmd "$@";; backup|restore) backup_cmd "$@";; update) update_cmd "$@";; remove|uninstall) remove_cmd "$@";;
-  help|-h|--help) help_cmd;; *) help_cmd >&2; exit "$RM_RC_PRECONDITION";;
+  '')
+    interactive_menu
+    ;;
+  env)
+    system_probe_fast "${1:-root}" "${2:-127.0.0.1}"
+    ;;
+  status)
+    status_cmd
+    ;;
+  quick-deploy)
+    quick_deploy
+    ;;
+  doctor)
+    if [[ ${1:-} == record-d4 ]]; then
+      shift
+      "$BASE_DIR/diagnostics.sh" record-d4 "$@"
+    else
+      "$BASE_DIR/diagnostics.sh" doctor
+    fi
+    ;;
+  target)
+    sub=${1:-candidates}; shift || true
+    case "$sub" in
+      candidates) jq '{candidates,policy}' "$RM_TARGETS_FILE";;
+      probe-candidates) target_probe_candidates;;
+      probe) [[ -n ${1:-} && -n ${2:-} ]] || exit "$RM_RC_PRECONDITION"; target_probe "$1" "$2";;
+      *) exit "$RM_RC_PRECONDITION";;
+    esac
+    ;;
+  core)
+    sub=${1:-}; shift || true
+    case "$sub" in
+      install)
+        mutation_guard || exit $?
+        xray_core_install "${1:-$(xray_default_version)}"
+        xray_service_install
+        ;;
+      *) exit "$RM_RC_PRECONDITION";;
+    esac
+    ;;
+  node)
+    node_cmd "$@"
+    ;;
+  upstream)
+    upstream_cmd "$@"
+    ;;
+  export)
+    state_init >/dev/null
+    show=false
+    [[ ${3:-} == --show ]] && show=true
+    export_upstream "$1" "${2:-current}" "$show"
+    ;;
+  firewall)
+    firewall_cmd "$@"
+    ;;
+  ssh)
+    ssh_cmd "$@"
+    ;;
+  fail2ban)
+    fail2ban_cmd "$@"
+    ;;
+  backup|restore)
+    backup_cmd "$@"
+    ;;
+  update)
+    update_cmd "$@"
+    ;;
+  remove|uninstall)
+    remove_cmd "$@"
+    ;;
+  reconcile)
+    rm_require_root || exit $?
+    tx_recover_pending || {
+      rc=$?
+      [[ $rc == "$RM_RC_RECOVERY_INCOMPLETE" ]] && exit "$rc"
+    }
+    upstream_rotation_reconcile_expired
+    ;;
+  help|-h|--help)
+    help_cmd
+    ;;
+  *)
+    help_cmd >&2
+    exit "$RM_RC_PRECONDITION"
+    ;;
 esac
