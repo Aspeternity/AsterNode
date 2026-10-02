@@ -40,6 +40,23 @@ assert_json "$client" '
 [[ $uri != *"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"* ]] ||
   fail 'server private key leaked into URI'
 
+disabled="$root/disabled.json"
+jq '.upstreams[0].enabled=false' "$spec" >"$disabled"
+"$vr" validate "$disabled"
+disabled_server=$("$vr" render_server "$disabled")
+assert_json "$disabled_server" '
+  (.inbounds[0].settings.clients|length)==1 and
+  .inbounds[0].settings.clients[0].id=="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+'
+
+bad_bool="$root/bad-bool.json"
+jq '.node.enabled="false"' "$spec" >"$bad_bool"
+set +e
+"$vr" validate "$bad_bool" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 10 "$rc" 'string false was accepted as node.enabled'
+
 dup="$root/dup.json"
 jq '.upstreams[1].uuid=.upstreams[0].uuid' "$spec" >"$dup"
 set +e

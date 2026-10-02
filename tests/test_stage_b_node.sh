@@ -34,6 +34,21 @@ set -e
 assert_eq 10 "$rc" 'direct UUID replacement bypassed rotation lifecycle'
 assert_eq aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.uuid' "$RM_STATE_FILE")"
 
+good_config="$root/good-config.json"
+cp "$RM_XRAY_CONFIG" "$good_config"
+state_before_drift=$(rm_sha256_file "$RM_STATE_FILE")
+printf '%s\n' '{"external":"edit"}' >"$RM_XRAY_CONFIG"
+drift_patch="$root/drift-patch.json"
+jq -n '{note:"must-not-apply"}' >"$drift_patch"
+set +e
+upstream_update_from_json up-line-a "$drift_patch" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 10 "$rc" 'external Xray config drift was silently overwritten'
+assert_eq '{"external":"edit"}' "$(cat "$RM_XRAY_CONFIG")" 'drift guard changed external config'
+assert_eq "$state_before_drift" "$(rm_sha256_file "$RM_STATE_FILE")" 'drift guard changed managed state'
+cp "$good_config" "$RM_XRAY_CONFIG"
+
 patch="$root/up-patch.json"
 jq -n '{note:"new-egress",source_addresses:["198.51.100.10"],enabled:true}' >"$patch"
 upstream_update_from_json up-line-a "$patch"
@@ -45,6 +60,11 @@ assert_json "$(cat "$RM_STATE_FILE")" '
 '
 
 upstream_set_enabled up-line-a false
+assert_eq false "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.enabled' "$RM_STATE_FILE")" 'explicit upstream disable was not preserved'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '
+  (.inbounds[0].settings.clients|length)==1 and
+  .inbounds[0].settings.clients[0].id=="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+'
 set +e
 upstream_set_enabled up-line-b false >/dev/null 2>&1
 rc=$?

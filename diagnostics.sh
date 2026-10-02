@@ -26,6 +26,24 @@ diag_d1() {
   fi
   items=$(jq -c --argjson x "$s" '.+[$x]' <<<"$items")
 
+  local expected actual
+  expected=$(jq -r --arg path '/etc/relay-manager-xray/config.json' '
+    [.owned_files[]? | select(.path==$path) | .sha256][0] // empty
+  ' "$RM_STATE_FILE" 2>/dev/null || true)
+  if [[ -n $expected ]]; then
+    if [[ ! -f $RM_XRAY_CONFIG || -L $RM_XRAY_CONFIG ]]; then
+      s=$(status_obj abnormal config-drift '受管 Xray 配置缺失或文件类型异常')
+    else
+      actual=$(rm_sha256_file "$RM_XRAY_CONFIG")
+      if [[ $actual == "$expected" ]]; then
+        s=$(status_obj normal config-drift '运行配置与所有权摘要一致')
+      else
+        s=$(status_obj abnormal config-drift "运行配置摘要与受管状态不一致 expected=$expected actual=$actual")
+      fi
+    fi
+    items=$(jq -c --argjson x "$s" '.+[$x]' <<<"$items")
+  fi
+
   local p mode owner group expected_mode expected_group
   for p in "$RM_STATE_FILE" "$RM_XRAY_CONFIG"; do
     [[ -e $p ]] || continue

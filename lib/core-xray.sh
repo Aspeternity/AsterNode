@@ -65,7 +65,7 @@ _xray_zip_safe() {
   done <<<"$list"
   # Xray release package is expected to contain regular files only for the binary/data/docs.
   # Reject Unix symlink entries when zipinfo is available.
-  if rm_have zipinfo && zipinfo -l "$zip" | awk 'NR>3 && $1 ~ /^l/ {exit 0} END{exit 1}'; then
+  if rm_have zipinfo && zipinfo -l "$zip" | awk 'NR>3 && $1 ~ /^l/ {found=1} END{exit found ? 0 : 1}'; then
     rm_error '发行包包含符号链接，拒绝解压。'; return "$RM_RC_PRECONDITION"
   fi
 }

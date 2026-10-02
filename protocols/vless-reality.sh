@@ -83,6 +83,14 @@ vr_validate() {
   [[ $flow == "$VR_FLOW" ]] || { rm_error '首版只支持 xtls-rprx-vision'; return "$RM_RC_PRECONDITION"; }
   [[ $access == whitelist || $access == public || $access == external ]] ||
     { rm_error 'access_mode 无效'; return "$RM_RC_PRECONDITION"; }
+  jq -e '
+    (((.node|has("enabled"))|not) or (.node.enabled|type=="boolean")) and
+    (((.node|has("autostart"))|not) or (.node.autostart|type=="boolean")) and
+    ([.upstreams[] | ((has("enabled")|not) or (.enabled|type=="boolean"))] | all)
+  ' "$f" >/dev/null || {
+    rm_error 'enabled/autostart 必须是 JSON 布尔值'
+    return "$RM_RC_PRECONDITION"
+  }
 
   local target_host target_port
   IFS="$(printf '\t')" read -r target_host target_port < <(rm_split_host_port "$target")

@@ -258,12 +258,31 @@ node_print_change_summary() {
   }' "$candidate" >&2
 }
 
+node_assert_managed_config_not_drifted() {
+  state_init >/dev/null || return $?
+  local expected actual
+  expected=$(jq -r --arg path '/etc/relay-manager-xray/config.json' '
+    [.owned_files[]? | select(.path==$path) | .sha256][0] // empty
+  ' "$RM_STATE_FILE")
+  [[ -n $expected ]] || return 0
+  if [[ ! -f $RM_XRAY_CONFIG || -L $RM_XRAY_CONFIG ]]; then
+    rm_error '检测到受管 Xray 配置漂移：运行配置缺失或文件类型异常。请先对账，拒绝静默覆盖。'
+    return "$RM_RC_PRECONDITION"
+  fi
+  actual=$(rm_sha256_file "$RM_XRAY_CONFIG")
+  if [[ $actual != "$expected" ]]; then
+    rm_error "检测到受管 Xray 配置被外部修改。expected=$expected actual=$actual；请先对账，拒绝静默覆盖。"
+    return "$RM_RC_PRECONDITION"
+  fi
+}
+
 node_apply_candidate_state() {
   local candidate=$1 type=${2:-node-change} confirm=${3:-true} service_mode=${4:-normal}
   [[ $confirm == true || $confirm == false ]] || return "$RM_RC_PRECONDITION"
   [[ $service_mode == normal || $service_mode == preserve ]] || return "$RM_RC_PRECONDITION"
   node_candidate_validate_ids "$candidate" || return $?
   node_candidate_validate_bindings "$candidate" || return $?
+  node_assert_managed_config_not_drifted || return $?
 
   local tmpdir config core tx rc=0 enabled_count autostart was_active=false cfgsha c2
   tmpdir=$(rm_safe_tmpdir) || return $?

@@ -33,4 +33,13 @@ set -e
 after=$(rm_sha256_file "$RM_STATE_FILE")
 assert_eq "$before" "$after" 'invalid state update changed state file'
 
-pass 'state schema, permissions, idempotency, shared-source references'
+before=$(rm_sha256_file "$RM_STATE_FILE")
+set +e
+state_update_filter '.nodes=[{node_id:"bad-bool",enabled:"false",autostart:true}]' >/dev/null 2>&1
+rc=$?
+set -e
+[[ $rc -ne 0 ]] || fail 'string boolean accepted in managed state'
+after=$(rm_sha256_file "$RM_STATE_FILE")
+assert_eq "$before" "$after" 'invalid boolean state update changed state file'
+
+pass 'state schema, permissions, idempotency, shared-source references and boolean typing'

@@ -72,8 +72,16 @@ state_validate_file() {
     (.nodes|type=="array") and (.upstreams|type=="array") and (.sources|type=="array") and
     (.owned_files|type=="array") and (.owned_services|type=="array") and
     (.owned_firewall_rules|type=="array") and (.temporary_opens|type=="array") and
-    ([.nodes[]? | (.node_id|type=="string" and length>0)] | all) and
-    ([.upstreams[]? | (.upstream_id|type=="string" and length>0) and (.node_id|type=="string" and length>0)] | all) and
+    ([.nodes[]? |
+      (.node_id|type=="string" and length>0) and
+      ((has("enabled")|not) or (.enabled|type=="boolean")) and
+      ((has("autostart")|not) or (.autostart|type=="boolean"))
+    ] | all) and
+    ([.upstreams[]? |
+      (.upstream_id|type=="string" and length>0) and
+      (.node_id|type=="string" and length>0) and
+      ((has("enabled")|not) or (.enabled|type=="boolean"))
+    ] | all) and
     ([.sources[]? | (.address|type=="string" and length>0) and (.upstream_ids|type=="array")] | all) and
     (([.nodes[]?.node_id] | length) == ([.nodes[]?.node_id] | unique | length)) and
     (([.upstreams[]?.upstream_id] | length) == ([.upstreams[]?.upstream_id] | unique | length))
