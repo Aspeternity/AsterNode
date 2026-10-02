@@ -14,7 +14,7 @@ vr_describe() {
     profile:$profile,
     flow_default:$flow,
     ports:{tcp:true,udp:false},
-    interfaces:["describe","collect","validate","render_server","render_client","render_uri","required_ports","probe"],
+    interfaces:["describe","collect","validate","render_server","render_client","required_ports","probe"],
     notes:[
       "服务端/客户端 Xray JSON 使用 v26.3.27 已验证字段 network=raw",
       "分享 URI 为兼容常见客户端/面板使用 type=tcp",
