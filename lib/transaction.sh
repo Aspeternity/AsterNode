@@ -115,7 +115,13 @@ tx_validate_destination() {
   fi
 
   case "$logical" in
-    /etc/relay-manager/*|/etc/relay-manager-xray/*|/etc/ssh/sshd_config.d/00-relay-manager.conf|/etc/ssh/authorized_keys/*|/etc/systemd/system/relay-manager-*.service|/etc/systemd/system/relay-manager-*.timer|/etc/systemd/system/ssh.socket.d/relay-manager.conf|/etc/fail2ban/jail.d/relay-manager-*.local|/usr/local/lib/relay-manager/*|/usr/local/bin/relay-manager|/root/.ssh/authorized_keys|/home/*/.ssh/authorized_keys) ;;
+    /etc/relay-manager/*|/etc/relay-manager-xray/*|/etc/ssh/sshd_config.d/00-relay-manager.conf|/etc/systemd/system/relay-manager-*.service|/etc/systemd/system/relay-manager-*.timer|/etc/systemd/system/ssh.socket.d/relay-manager.conf|/etc/systemd/system/ssh.socket.d/relay-manager-guard.conf|/etc/systemd/system/ssh.service.d/relay-manager-guard.conf|/etc/systemd/system/sshd.service.d/relay-manager-guard.conf|/etc/fail2ban/jail.d/relay-manager-*.local|/usr/local/lib/relay-manager/*|/usr/local/bin/relay-manager|/root/.ssh/authorized_keys) ;;
+    /etc/ssh/authorized_keys/*)
+      [[ $logical =~ ^/etc/ssh/authorized_keys/[^/]+$ ]] || { rm_error "事务拒绝过宽 AuthorizedKeys 路径: $logical"; return "$RM_RC_PRECONDITION"; }
+      ;;
+    /home/*/.ssh/authorized_keys)
+      [[ $logical =~ ^/home/[^/]+/\.ssh/authorized_keys$ ]] || { rm_error "事务拒绝过宽用户公钥路径: $logical"; return "$RM_RC_PRECONDITION"; }
+      ;;
     *) rm_error "事务拒绝未受管路径: $logical"; return "$RM_RC_PRECONDITION" ;;
   esac
 
