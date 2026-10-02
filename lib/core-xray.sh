@@ -123,6 +123,7 @@ xray_service_install() {
   if ((rc!=0)); then tx_rollback "$tx" 'stage failed' || true; return "$RM_RC_PRECONDITION"; fi
   tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'apply failed' || true; return "$rc"; }
 
+  tx_mark_service_changed "$tx" "$RM_MAINT_TIMER" || true
   if [[ ${RM_TEST_MODE} != 1 ]]; then
     systemctl daemon-reload || { tx_rollback "$tx" 'systemd daemon-reload failed' || true; return "$RM_RC_APPLY_ROLLED_BACK"; }
     systemctl enable --now "$RM_MAINT_TIMER" >/dev/null || {
@@ -135,8 +136,6 @@ xray_service_install() {
     rm_systemctl enable "$RM_MAINT_TIMER"
     rm_systemctl start "$RM_MAINT_TIMER"
   fi
-
-  tx_mark_service_changed "$tx" "$RM_MAINT_TIMER" || true
   tx_commit "$tx" || return $?
   state_add_owned_file "/etc/systemd/system/$RM_XRAY_SERVICE" "$(rm_sha256_file "$RM_XRAY_SERVICE_FILE")"
   state_add_owned_file "/etc/systemd/system/$RM_MAINT_SERVICE" "$(rm_sha256_file "$RM_MAINT_SERVICE_FILE")"
