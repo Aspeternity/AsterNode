@@ -311,30 +311,32 @@ node_apply_state_only_candidate() {
     rm_confirm '确认应用上述状态变更?' || return "$RM_RC_CANCEL"
   fi
 
-  local expected_config_sha current_config_sha tx rc=0
+  local expected_config_sha snapshot_config_sha tx rc=0
   expected_config_sha=$(jq -r --arg path '/etc/relay-manager-xray/config.json' '
     [.owned_files[]? | select(.path==$path) | .sha256][0] // empty
   ' "$RM_STATE_FILE")
 
   tx=$(tx_begin "$type") || return $?
+
+  if [[ -n $expected_config_sha ]]; then
+    tx_snapshot_file "$tx" "$RM_XRAY_CONFIG" || {
+      tx_rollback "$tx" 'managed config snapshot failed before state-only apply' || true
+      return "$RM_RC_PRECONDITION"
+    }
+    snapshot_config_sha=$(jq -r --arg dest "$RM_XRAY_CONFIG" '
+      [.files[]|select(.destination==$dest)|.old_sha256][0] // empty
+    ' "$(tx_file "$tx")")
+    if [[ $snapshot_config_sha != "$expected_config_sha" ]]; then
+      tx_rollback "$tx" 'managed config drifted before state-only apply' || true
+      rm_error "受管 Xray 配置在状态更新前发生漂移。expected=$expected_config_sha actual=$snapshot_config_sha"
+      return "$RM_RC_PRECONDITION"
+    fi
+  fi
+
   tx_stage_file "$tx" "$candidate" "$RM_STATE_FILE" 0600 root:root || {
     tx_rollback "$tx" 'state stage failed' || true
     return "$RM_RC_PRECONDITION"
   }
-
-  if [[ -n $expected_config_sha ]]; then
-    if [[ ! -f $RM_XRAY_CONFIG || -L $RM_XRAY_CONFIG ]]; then
-      tx_rollback "$tx" 'managed config disappeared before state-only apply' || true
-      rm_error '受管 Xray 配置在状态更新前消失或变成了异常文件类型。'
-      return "$RM_RC_PRECONDITION"
-    fi
-    current_config_sha=$(rm_sha256_file "$RM_XRAY_CONFIG")
-    if [[ $current_config_sha != "$expected_config_sha" ]]; then
-      tx_rollback "$tx" 'managed config drifted before state-only apply' || true
-      rm_error "受管 Xray 配置在状态更新前发生漂移。expected=$expected_config_sha actual=$current_config_sha"
-      return "$RM_RC_PRECONDITION"
-    fi
-  fi
 
   tx_apply "$tx" || {
     rc=$?
