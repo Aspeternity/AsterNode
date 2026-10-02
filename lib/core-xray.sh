@@ -10,6 +10,10 @@ RM_CORE_CURRENT="$RM_CORE_BASE/current"
 RM_XRAY_DATA_DIR="$(rm_path /var/lib/relay-manager-xray)"
 RM_XRAY_SERVICE="relay-manager-xray.service"
 RM_XRAY_SERVICE_FILE="$(rm_path /etc/systemd/system/$RM_XRAY_SERVICE)"
+RM_MAINT_SERVICE="relay-manager-maintenance.service"
+RM_MAINT_TIMER="relay-manager-maintenance.timer"
+RM_MAINT_SERVICE_FILE="$(rm_path /etc/systemd/system/$RM_MAINT_SERVICE)"
+RM_MAINT_TIMER_FILE="$(rm_path /etc/systemd/system/$RM_MAINT_TIMER)"
 RM_XRAY_CONFIG="$(rm_path /etc/relay-manager-xray/config.json)"
 
 xray_default_version() { jq -er '.default_core_version' "$RM_COMPAT_FILE"; }
@@ -107,21 +111,72 @@ xray_service_install() {
   xray_ensure_user || return $?
   install -d -m 0750 "$RM_XRAY_ETC_DIR"
   if [[ ${RM_TEST_MODE} != 1 ]]; then chown root:rm-xray "$RM_XRAY_ETC_DIR"; fi
-  local tx
-  tx=$(tx_begin core-service) || return $?
-  tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-xray.service" "$RM_XRAY_SERVICE_FILE" 0644 root:root || { tx_rollback "$tx" 'stage failed' || true; return "$RM_RC_PRECONDITION"; }
-  tx_apply "$tx" || { local rc=$?; tx_rollback "$tx" 'apply failed' || true; return "$rc"; }
-  if [[ ${RM_TEST_MODE} != 1 ]]; then systemctl daemon-reload || { tx_rollback "$tx" 'systemd daemon-reload failed' || true; return "$RM_RC_APPLY_ROLLED_BACK"; }; fi
-  tx_commit "$tx"
-  state_add_owned_file /etc/systemd/system/$RM_XRAY_SERVICE "$(rm_sha256_file "$RM_XRAY_SERVICE_FILE")"
-}
 
+  local tx rc=0
+  tx=$(tx_begin core-service) || return $?
+  tx_record_service "$tx" "$RM_XRAY_SERVICE" || true
+  tx_record_service "$tx" "$RM_MAINT_SERVICE" || true
+  tx_record_service "$tx" "$RM_MAINT_TIMER" || true
+  tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-xray.service" "$RM_XRAY_SERVICE_FILE" 0644 root:root || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-maintenance.service" "$RM_MAINT_SERVICE_FILE" 0644 root:root || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-maintenance.timer" "$RM_MAINT_TIMER_FILE" 0644 root:root || rc=$?
+  if ((rc!=0)); then tx_rollback "$tx" 'stage failed' || true; return "$RM_RC_PRECONDITION"; fi
+  tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'apply failed' || true; return "$rc"; }
+
+  if [[ ${RM_TEST_MODE} != 1 ]]; then
+    systemctl daemon-reload || { tx_rollback "$tx" 'systemd daemon-reload failed' || true; return "$RM_RC_APPLY_ROLLED_BACK"; }
+    systemctl enable --now "$RM_MAINT_TIMER" >/dev/null || {
+      tx_rollback "$tx" 'maintenance timer enable failed' || true
+      systemctl daemon-reload || true
+      return "$RM_RC_APPLY_ROLLED_BACK"
+    }
+  else
+    rm_systemctl daemon-reload
+    rm_systemctl enable "$RM_MAINT_TIMER"
+    rm_systemctl start "$RM_MAINT_TIMER"
+  fi
+
+  tx_mark_service_changed "$tx" "$RM_MAINT_TIMER" || true
+  tx_commit "$tx" || return $?
+  state_add_owned_file "/etc/systemd/system/$RM_XRAY_SERVICE" "$(rm_sha256_file "$RM_XRAY_SERVICE_FILE")"
+  state_add_owned_file "/etc/systemd/system/$RM_MAINT_SERVICE" "$(rm_sha256_file "$RM_MAINT_SERVICE_FILE")"
+  state_add_owned_file "/etc/systemd/system/$RM_MAINT_TIMER" "$(rm_sha256_file "$RM_MAINT_TIMER_FILE")"
+  state_add_owned_service "$RM_XRAY_SERVICE"
+  state_add_owned_service "$RM_MAINT_SERVICE"
+  state_add_owned_service "$RM_MAINT_TIMER"
+}
 xray_test_config() {
   local cfg=${1:-$RM_XRAY_CONFIG} bin=${2:-$(xray_current_binary)} out rc
   [[ -x $bin ]] || { rm_error '受管 Xray 核心未安装'; return "$RM_RC_PRECONDITION"; }
   [[ -f $cfg ]] || { rm_error 'Xray 配置不存在'; return "$RM_RC_PRECONDITION"; }
   set +e; out=$($bin run -test -config "$cfg" 2>&1); rc=$?; set -e
   if ((rc)); then rm_error "Xray 配置测试失败: ${out:0:1200}"; return "$RM_RC_PRECONDITION"; fi
+}
+
+xray_test_config_as_service_user() {
+  local cfg=${1:-$RM_XRAY_CONFIG} bin=${2:-$(xray_current_binary)} out rc
+  xray_test_config "$cfg" "$bin" || return $?
+  [[ -r $cfg ]] || { rm_error "Xray 配置当前用户不可读: $cfg"; return "$RM_RC_PRECONDITION"; }
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    return 0
+  fi
+  getent passwd rm-xray >/dev/null 2>&1 || { rm_error 'rm-xray 用户不存在'; return "$RM_RC_PRECONDITION"; }
+  local mode owner group
+  mode=$(stat -c '%a' "$cfg")
+  owner=$(stat -c '%U' "$cfg")
+  group=$(stat -c '%G' "$cfg")
+  [[ $mode == 640 && $owner == root && $group == rm-xray ]] || {
+    rm_error "Xray 运行配置权限异常: mode=$mode owner=$owner group=$group"
+    return "$RM_RC_PRECONDITION"
+  }
+  set +e
+  out=$(runuser -u rm-xray -- "$bin" run -test -config "$cfg" 2>&1)
+  rc=$?
+  set -e
+  if ((rc)); then
+    rm_error "rm-xray 用户无法读取/验证运行配置: ${out:0:1200}"
+    return "$RM_RC_PRECONDITION"
+  fi
 }
 
 xray_service_enable_start() {
