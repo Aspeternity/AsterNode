@@ -195,6 +195,6 @@ xray_service_enable_start() {
 
 xray_service_stop_if_unused() {
   state_init >/dev/null
-  local n; n=$(jq '[.nodes[]|select((.enabled//true)==true)]|length' "$RM_STATE_FILE")
+  local n; n=$(jq '[.nodes[]|select((if has("enabled") then .enabled else true end)==true)]|length' "$RM_STATE_FILE")
   if ((n==0)); then rm_systemctl stop "$RM_XRAY_SERVICE" || true; fi
 }
