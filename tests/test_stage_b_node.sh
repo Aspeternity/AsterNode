@@ -59,20 +59,21 @@ assert_json "$(cat "$RM_STATE_FILE")" '
   ([.sources[]|select(.address=="198.51.100.9")][0].upstream_ids)==["up-line-b"]
 '
 
+ipv6_norm=$(rm_normalize_ip_or_cidr 2001:db8::20)
 source_add=$(upstream_source_add up-line-a 2001:db8::20)
 assert_json "$source_add" '.status=="added" and .source.family=="ipv6" and .source.scope=="single"'
-assert_json "$(cat "$RM_STATE_FILE")" '
-  any(.upstreams[]|select(.upstream_id=="up-line-a").source_addresses[]; .=="2001:db8::20")
-'
+jq -e --arg addr "$ipv6_norm" '
+  any(.upstreams[]|select(.upstream_id=="up-line-a").source_addresses[]; .==$addr)
+' "$RM_STATE_FILE" >/dev/null || fail 'normalized IPv6 source was not retained'
 source_broad=$(upstream_source_add up-line-a 10.0.0.0/8)
 assert_json "$source_broad" '.status=="added" and .source.scope=="broad" and (.source.warning|type=="string")'
 source_remove=$(upstream_source_remove up-line-a 198.51.100.10)
 assert_json "$source_remove" '.status=="removed" and .remaining_sources==2'
-assert_json "$(cat "$RM_STATE_FILE")" '
+jq -e --arg addr "$ipv6_norm" '
   ([.sources[]|select(.address=="198.51.100.10")]|length)==0 and
-  any(.sources[]; .address=="2001:db8::20") and
+  any(.sources[]; .address==$addr) and
   any(.sources[]; .address=="10.0.0.0/8")
-'
+' "$RM_STATE_FILE" >/dev/null || fail 'shared source reference rebuild did not preserve normalized addresses'
 
 upstream_set_enabled up-line-a false
 assert_eq false "$(jq -r '.upstreams[]|select(.upstream_id=="up-line-a")|.enabled' "$RM_STATE_FILE")" 'explicit upstream disable was not preserved'

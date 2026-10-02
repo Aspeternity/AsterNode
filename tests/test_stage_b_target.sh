@@ -38,13 +38,21 @@ assert_json "$probe" '
   (.risk_note|contains("不会因 Target 探测自动开放额外端口"))
 '
 
-target_probe() {
-  jq -n --arg target "$1" --arg sni "$2" '{status:"suitable_measured",target:$target,sni:$sni,latency_ms:1}'
-}
+mock_targets="$root/targets.json"
+jq -n '{
+  candidates:[
+    {target:"127.0.0.1:1",sni:"www.example.com"},
+    {target:"127.0.0.1:2",sni:"www.example.com"},
+    {target:"127.0.0.1:3",sni:"www.example.com"}
+  ],
+  policy:"unit-test loopback candidates"
+}' >"$mock_targets"
+RM_TARGETS_FILE="$mock_targets"
 candidates=$(target_probe_candidates)
 assert_json "$candidates" '
   (.results|length)==3 and
-  (.suitable|length)==3 and
+  (.suitable|length)==0 and
+  all(.results[]; .status=="failed") and
   .auto_selected==false and
   .probe_policy.max_parallel==2 and
   .probe_policy.handshake_attempts==2
