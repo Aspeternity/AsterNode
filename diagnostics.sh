@@ -139,7 +139,7 @@ diag_record_d4() {
   rm_require_root || return $?
   rm_tty_available || return "$RM_RC_PRECONDITION"
   state_init >/dev/null
-  jq -e --arg node "$node" --arg up "$upstream" '.upstreams[]|select(.upstream_id==$up and .node_id==$node and ((.enabled//true)==true))' "$RM_STATE_FILE" >/dev/null || {
+  jq -e --arg node "$node" --arg up "$upstream" '.upstreams[]|select(.upstream_id==$up and .node_id==$node and ((if has("enabled") then .enabled else true end)==true))' "$RM_STATE_FILE" >/dev/null || {
     rm_error '线路机不存在、未启用或不属于该节点'; return "$RM_RC_PRECONDITION";
   }
   local ip
