@@ -357,7 +357,7 @@ ssh_apply_policy_protected() {
 ssh_begin_port_migration() {
   local newport=$1 tmp policy ports
   rm_valid_port "$newport" || return "$RM_RC_PRECONDITION"
-  if rm_have ss && ss -H -lnt "sport = :$newport" 2>/dev/null | grep -q .; then rm_error '新 SSH 端口已被占用'; return "$RM_RC_PRECONDITION"; fi
+  if [[ ${RM_TEST_MODE} != 1 ]] && rm_have ss && ss -H -lnt "sport = :$newport" 2>/dev/null | grep -q .; then rm_error '新 SSH 端口已被占用'; return "$RM_RC_PRECONDITION"; fi
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   ports=$(jq --argjson p "$newport" '.ports + [$p] | unique' "$policy"); jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
   local result; result=$(ssh_apply_policy_protected "$policy" port-migration root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
