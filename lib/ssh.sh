@@ -3,6 +3,8 @@
 # unless reliable auth-log correlation is added and validated on a target distro.
 # shellcheck source=lib/transaction.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/transaction.sh"
+# shellcheck source=lib/firewall.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/firewall.sh"
 
 RM_SSH_POLICY="$(rm_path /etc/relay-manager/ssh-policy.json)"
 RM_SSH_DROPIN="$(rm_path /etc/ssh/sshd_config.d/00-relay-manager.conf)"
@@ -355,20 +357,52 @@ ssh_apply_policy_protected() {
 }
 
 ssh_begin_port_migration() {
-  local newport=$1 tmp policy ports
+  local newport=$1 tmp policy ports fw_result='{}' fw_added=false result txid rc
   rm_valid_port "$newport" || return "$RM_RC_PRECONDITION"
-  if [[ ${RM_TEST_MODE} != 1 ]] && rm_have ss && ss -H -lnt "sport = :$newport" 2>/dev/null | grep -q .; then rm_error '新 SSH 端口已被占用'; return "$RM_RC_PRECONDITION"; fi
+  if [[ ${RM_TEST_MODE} != 1 ]] && rm_have ss && ss -H -lnt "sport = :$newport" 2>/dev/null | grep -q .; then
+    rm_error '新 SSH 端口已被占用'
+    return "$RM_RC_PRECONDITION"
+  fi
+
+  # If active, manageable UFW exists, open the new SSH port before changing listeners.
+  fw_result=$(fw_ensure_ssh_port "$newport") || return $?
+  fw_added=$(jq -r '.added // false' <<<"$fw_result")
+
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
-  ports=$(jq --argjson p "$newport" '.ports + [$p] | unique' "$policy"); jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" port-migration root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  ports=$(jq --argjson p "$newport" '.ports + [$p] | unique' "$policy")
+  jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
+
+  if ! result=$(ssh_apply_policy_protected "$policy" port-migration root); then
+    rc=$?
+    [[ $fw_added == true ]] && fw_release_ssh_port "$newport" || true
+    rm -rf "$tmp"
+    return "$rc"
+  fi
+  txid=$(jq -r .transaction_id <<<"$result")
+  if [[ $fw_added == true ]]; then
+    tx_update "$txid" '.ssh.firewall_added_ports=((.ssh.firewall_added_ports//[]) + [$p] | unique)' --argjson p "$newport"
+  fi
+  jq -n --argjson ssh "$result" --argjson firewall "$fw_result" '$ssh + {firewall:$firewall}'
+  rm -rf "$tmp"
 }
 
 ssh_begin_remove_old_port() {
-  local keep=$1 tmp policy
+  local keep=$1 tmp policy current_ports remove_ports result txid
   rm_valid_port "$keep" || return "$RM_RC_PRECONDITION"
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
+  current_ports=$(jq -c '.ports' "$policy")
+  jq -e --argjson p "$keep" 'index($p)!=null' <<<"$current_ports" >/dev/null || {
+    rm_error '要保留的端口不在当前已提交 SSH 端口列表中'
+    rm -rf "$tmp"
+    return "$RM_RC_PRECONDITION"
+  }
+  remove_ports=$(jq -c --argjson p "$keep" '[.[]|select(.!=$p)]' <<<"$current_ports")
   jq --argjson p "$keep" '.ports=[$p]' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" remove-old-port root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  result=$(ssh_apply_policy_protected "$policy" remove-old-port root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }
+  txid=$(jq -r .transaction_id <<<"$result")
+  tx_update "$txid" '.ssh.firewall_remove_after_confirm=$ports' --argjson ports "$remove_ports"
+  printf '%s\n' "$result"
+  rm -rf "$tmp"
 }
 
 ssh_mark_key_verified() {
@@ -450,15 +484,30 @@ ssh_confirm_pending() {
   fi
   [[ $ans == COMMIT ]] || return "$RM_RC_CANCEL"
   tx_commit "$tx" || return $?
+  local cleanup_rc=0 oldp
+  while IFS= read -r oldp; do
+    [[ -n $oldp ]] || continue
+    fw_release_ssh_port "$oldp" || cleanup_rc=$RM_RC_RECOVERY_INCOMPLETE
+  done < <(jq -r '.ssh.firewall_remove_after_confirm[]? // empty' "$f")
   ssh_protection_disable
+  if ((cleanup_rc!=0)); then
+    jq -n --arg tx "$tx" '{status:"committed_with_firewall_cleanup_warning",transaction_id:$tx}'
+    return "$cleanup_rc"
+  fi
   jq -n --arg tx "$tx" '{status:"committed_after_manual_verification",transaction_id:$tx}'
 }
 
 ssh_rollback_pending() {
-  local tx mode rc=0; tx=$(ssh_pending_tx_id) || { ssh_protection_disable; return 0; }
+  local tx mode rc=0 f p
+  tx=$(ssh_pending_tx_id) || { ssh_protection_disable; return 0; }
+  f=$(tx_file "$tx")
   mode=$(ssh_service_mode)
   tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' || rc=$?
   ssh_restart_mode "$mode" || rc=$RM_RC_RECOVERY_INCOMPLETE
+  while IFS= read -r p; do
+    [[ -n $p ]] || continue
+    fw_release_ssh_port "$p" || rc=$RM_RC_RECOVERY_INCOMPLETE
+  done < <(jq -r '.ssh.firewall_added_ports[]? // empty' "$f" 2>/dev/null || true)
   ssh_protection_disable
   return "$rc"
 }
