@@ -38,6 +38,7 @@ assert_json "$installed" '.status=="installed" and .version=="'"$version"'"'
 assert_eq "$root/usr/local/lib/relay-manager/versions/$version/relay-manager.sh" "$(readlink -f "$root/usr/local/bin/relay-manager")"
 assert_file_mode "$root/etc/relay-manager/trusted-release.pem" 644
 assert_file_mode "$root/usr/local/lib/relay-manager/versions/$version/MANIFEST.json" 644
+update_verify_release_dir "$root/usr/local/lib/relay-manager/versions/$version" "$built_pub"
 
 smoke_stdout=$(update_run_release_smoke "$root/usr/local/lib/relay-manager/versions/$version")
 assert_eq '' "$smoke_stdout" 'release smoke polluted machine-readable stdout'
@@ -106,6 +107,38 @@ extra_sha=$(sha256sum "$extra_pkg" | awk '{print $1}')
 rc=0
 update_install_manager_package "$extra_pkg" "$extra_sha" "$built_pub" >/dev/null 2>&1 || rc=$?
 assert_eq 10 "$rc" 'undeclared extra payload was accepted'
+
+# A valid signed payload under the wrong top-level directory must be rejected.
+wrongroot="$work/wrongroot"
+mkdir "$wrongroot"
+tar -xzf "$package" -C "$wrongroot"
+mv "$wrongroot/$top" "$wrongroot/relay-manager-wrong"
+wrongroot_pkg="$work/wrongroot.tar.gz"
+tar -C "$wrongroot" -czf "$wrongroot_pkg" relay-manager-wrong
+wrongroot_sha=$(sha256sum "$wrongroot_pkg" | awk '{print $1}')
+rc=0
+update_install_manager_package "$wrongroot_pkg" "$wrongroot_sha" "$built_pub" >/dev/null 2>&1 || rc=$?
+assert_eq 10 "$rc" 'archive root name was not bound to the signed manifest version'
+
+# Trust-anchor installer failures must propagate with their original exit code.
+(
+  update_install_trusted_key() { return "$RM_RC_NETWORK"; }
+  rc=0
+  update_install_manager_package "$package" "$sha" "$built_pub" >/dev/null 2>&1 || rc=$?
+  assert_eq "$RM_RC_NETWORK" "$rc" 'trust-anchor failure exit code was lost'
+)
+
+# Atomic link-switch failures must also propagate and keep an existing verified version.
+rm -f "$root/usr/local/bin/relay-manager" "$root/usr/local/lib/relay-manager/current"
+(
+  update_switch_manager_links() { return "$RM_RC_INTERNAL"; }
+  rc=0
+  update_install_manager_package "$package" "$sha" "$built_pub" >/dev/null 2>&1 || rc=$?
+  assert_eq "$RM_RC_INTERNAL" "$rc" 'manager-link switch failure exit code was lost'
+)
+[[ -d "$root/usr/local/lib/relay-manager/versions/$version" ]] || fail 'verified version directory was removed after failed link switch'
+ln -s "$root/usr/local/lib/relay-manager/versions/$version" "$root/usr/local/lib/relay-manager/current"
+ln -s "$root/usr/local/lib/relay-manager/current/relay-manager.sh" "$root/usr/local/bin/relay-manager"
 
 # Traversal-style archive names are rejected before extraction.
 mkdir "$work/mal"

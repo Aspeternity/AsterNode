@@ -111,7 +111,7 @@ update_manifest_path_valid() {
 update_verify_release_dir() {
   local dir=$1 key=${2:-$RM_TRUSTED_RELEASE_KEY}
   local manifest sums sig
-  local version expected_root count i p file sha size mode actual_sha actual_size actual_mode tmp_expected tmp_sums expected_count actual_count
+  local version count i p file sha size mode actual_sha actual_size actual_mode tmp_expected tmp_sums expected_count actual_count
   manifest="$dir/MANIFEST.json"
   sums="$dir/SHA256SUMS"
   sig="$dir/RELEASE.sig"
@@ -159,11 +159,6 @@ update_verify_release_dir() {
 
   version=$(jq -r .version "$manifest")
   update_validate_release_version "$version" || return "$RM_RC_PRECONDITION"
-  expected_root="relay-manager-$version"
-  [[ $(basename "$dir") == "$expected_root" ]] || {
-    rm_error '发行包目录名与 manifest version 不一致'
-    return "$RM_RC_PRECONDITION"
-  }
   [[ -f $dir/VERSION && ! -L $dir/VERSION && $(cat "$dir/VERSION") == "$version" ]] || {
     rm_error 'VERSION 与发行 manifest 不一致'
     return "$RM_RC_PRECONDITION"
@@ -374,6 +369,11 @@ update_install_manager_package() {
   update_verify_release_dir "$root" "$verify_key" || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   manifest="$root/MANIFEST.json"
   version=$(jq -r .version "$manifest")
+  [[ $top == "relay-manager-$version" ]] || {
+    rm_error "发行包顶层目录与签名 manifest 版本不一致: $top / $version"
+    rm -rf "$tmpdir"
+    return "$RM_RC_PRECONDITION"
+  }
   dest="$RM_VERSION_BASE/$version"
 
   if tx_has_conflict; then
@@ -417,11 +417,12 @@ update_install_manager_package() {
   fi
 
   if [[ -n $explicit_key ]]; then
-    if ! update_install_trusted_key "$explicit_key"; then
-      local rc=$?
+    local trust_rc=0
+    update_install_trusted_key "$explicit_key" || trust_rc=$?
+    if ((trust_rc!=0)); then
       [[ $copied == true ]] && rm -rf "$dest"
       rm -rf "$tmpdir"
-      return "$rc"
+      return "$trust_rc"
     fi
   fi
 
@@ -434,11 +435,12 @@ update_install_manager_package() {
     return 0
   fi
 
-  if ! update_switch_manager_links "$dest" "$previous" "$bin_preexisting"; then
-    local rc=$?
+  local switch_rc=0
+  update_switch_manager_links "$dest" "$previous" "$bin_preexisting" || switch_rc=$?
+  if ((switch_rc!=0)); then
     [[ $copied == true ]] && rm -rf "$dest"
     rm -rf "$tmpdir"
-    return "$rc"
+    return "$switch_rc"
   fi
 
   state_rc=0
@@ -472,7 +474,7 @@ update_manager_rollback() {
   rm_require_root || return $?
   state_init >/dev/null || return $?
   tx_has_conflict && { rm_error '有未完成安全事务，禁止回退'; return "$RM_RC_PRECONDITION"; }
-  local prev current prev_real state_rc=0
+  local prev current prev_real state_rc=0 bin_preexisting=false
   prev=$(jq -r '.previous_manager_path//empty' "$RM_STATE_FILE")
   [[ -n $prev && -d $prev && ! -L $prev && -x $prev/relay-manager.sh ]] || {
     rm_error '没有可恢复的上一管理器版本'
@@ -492,8 +494,9 @@ update_manager_rollback() {
   current=$(update_current_managed_version_path) || return $?
   update_validate_bin_link "$current" || return $?
   [[ -n $current ]] || { rm_error '当前没有可回退的受管管理器版本'; return "$RM_RC_PRECONDITION"; }
+  [[ -e $RM_BIN_LINK || -L $RM_BIN_LINK ]] && bin_preexisting=true
 
-  update_switch_manager_links "$prev_real" "$current" true || return $?
+  update_switch_manager_links "$prev_real" "$current" "$bin_preexisting" || return $?
 
   state_update_filter '.previous_manager_path=$current | .manager_version=$v' --arg current "$current" --arg v "$(basename "$prev_real")" || state_rc=$?
   if ((state_rc!=0)); then
