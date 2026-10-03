@@ -98,10 +98,10 @@ assert_json "$verify_cmd" '
 export RM_SSH_TEST_MANUAL_VERIFY=VERIFY
 verified=$(ssh_mark_key_verified root "$fp")
 assert_json "$verified" '.status=="manual_new_connection_verified" and .fingerprint==$fp'
-assert_json "$(cat "$RM_STATE_FILE")" --arg fp "$fp" '
+jq -e --arg fp "$fp" '
   .ssh_verifications.root.key_login_manual==true and
   any(.ssh_verifications.root.verified_key_fingerprints[]; .==$fp)
-'
+' "$RM_STATE_FILE" >/dev/null || fail 'verified SSH key fingerprint was not persisted'
 
 # MFA/external authentication blockers must stop automatic tightening.
 cat >"$RM_SSH_EFFECTIVE_FILE" <<'EOF'
