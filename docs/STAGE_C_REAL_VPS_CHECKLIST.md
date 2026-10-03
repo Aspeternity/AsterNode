@@ -87,7 +87,7 @@
 
 ## C-VPS-06：UFW 业务入口与白名单真实隔离（T15-T19）
 
-- Debian/Ubuntu fresh UFW 的 before/after framework 完整性必须按 UCF 官方模板与历史 MD5 校验；不得依赖 dpkg Conffiles。未知本地修改、软链接或无法验证的参考元数据必须 fail-closed。
+- Debian/Ubuntu fresh UFW 的 before/after framework 完整性必须按 UCF canonical 模板 `/usr/share/ufw/iptables/*.rules` 与历史 MD5 校验；不得依赖 dpkg Conffiles，也不得把包自身合法的 `/usr/share/ufw/*.rules` 软链接误判为篡改。真正的 `/etc/ufw/*.rules` 软链接、未知本地修改或无法验证的参考元数据仍必须 fail-closed。
 
 覆盖 FW-01~08。
 

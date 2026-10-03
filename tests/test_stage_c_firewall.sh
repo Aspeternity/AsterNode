@@ -25,12 +25,15 @@ source "$PROJECT_DIR/lib/firewall.sh"
 state_init
 
 # Debian/Ubuntu UFW manages before/after framework rules through UCF rather
-# than dpkg Conffiles. Exercise the real file/hash classifier directly.
-mkdir -p "$root/etc/ufw" "$root/usr/share/ufw"
+# than dpkg Conffiles. The package-facing /usr/share/ufw/*.rules entries are
+# legitimate symlinks to canonical /usr/share/ufw/iptables/*.rules templates.
+# Exercise that real layout directly.
+mkdir -p "$root/etc/ufw" "$root/usr/share/ufw/iptables"
 for base in before.rules after.rules before6.rules after6.rules; do
-  printf 'official-%s-v1\n' "$base" >"$root/usr/share/ufw/$base"
-  cp "$root/usr/share/ufw/$base" "$root/etc/ufw/$base"
-  hash=$(md5sum "$root/usr/share/ufw/$base" | awk '{print $1}')
+  printf 'official-%s-v1\n' "$base" >"$root/usr/share/ufw/iptables/$base"
+  ln -s "iptables/$base" "$root/usr/share/ufw/$base"
+  cp "$root/usr/share/ufw/iptables/$base" "$root/etc/ufw/$base"
+  hash=$(md5sum "$root/usr/share/ufw/iptables/$base" | awk '{print $1}')
   printf '%s  /usr/share/ufw/%s\n' "$hash" "$base" >"$root/usr/share/ufw/$base.md5sum"
 done
 
@@ -57,9 +60,9 @@ assert_json "$integrity" '
 '
 
 # Symlink substitution is treated as modification even when content matches.
-cp "$root/usr/share/ufw/after.rules" "$root/etc/ufw/after.rules"
+cp "$root/usr/share/ufw/iptables/after.rules" "$root/etc/ufw/after.rules"
 rm "$root/etc/ufw/after6.rules"
-ln -s "$root/usr/share/ufw/after6.rules" "$root/etc/ufw/after6.rules"
+ln -s "$root/usr/share/ufw/iptables/after6.rules" "$root/etc/ufw/after6.rules"
 integrity=$(fw_framework_integrity_files_json)
 assert_json "$integrity" '
   .status=="modified" and
@@ -69,8 +72,8 @@ assert_json "$integrity" '
 # If neither the current package template nor UCF history can prove a file,
 # classification must remain fail-closed as unverified.
 rm "$root/etc/ufw/after6.rules"
-cp "$root/usr/share/ufw/after6.rules" "$root/etc/ufw/after6.rules"
-rm "$root/usr/share/ufw/before6.rules" "$root/usr/share/ufw/before6.rules.md5sum"
+cp "$root/usr/share/ufw/iptables/after6.rules" "$root/etc/ufw/after6.rules"
+rm "$root/usr/share/ufw/iptables/before6.rules" "$root/usr/share/ufw/before6.rules.md5sum"
 integrity=$(fw_framework_integrity_files_json)
 assert_json "$integrity" '
   .status=="unverified" and .modified==null and
@@ -78,9 +81,9 @@ assert_json "$integrity" '
 '
 
 # Restore the fixture used by the adapter tests below.
-printf 'official-before6.rules-v1\n' >"$root/usr/share/ufw/before6.rules"
-cp "$root/usr/share/ufw/before6.rules" "$root/etc/ufw/before6.rules"
-hash=$(md5sum "$root/usr/share/ufw/before6.rules" | awk '{print $1}')
+printf 'official-before6.rules-v1\n' >"$root/usr/share/ufw/iptables/before6.rules"
+cp "$root/usr/share/ufw/iptables/before6.rules" "$root/etc/ufw/before6.rules"
+hash=$(md5sum "$root/usr/share/ufw/iptables/before6.rules" | awk '{print $1}')
 printf '%s  /usr/share/ufw/before6.rules\n' "$hash" >"$root/usr/share/ufw/before6.rules.md5sum"
 
 cat >"$RM_UFW_STATUS_FILE" <<'EOF'

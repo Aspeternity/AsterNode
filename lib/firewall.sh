@@ -63,7 +63,9 @@ fw_framework_integrity_files_json() {
   for logical in /etc/ufw/before.rules /etc/ufw/after.rules /etc/ufw/before6.rules /etc/ufw/after6.rules; do
     path=$(rm_path "$logical")
     base=${logical##*/}
-    template=$(rm_path "/usr/share/ufw/$base")
+    # Debian/Ubuntu pass the canonical /usr/share/ufw/iptables/*.rules
+    # files to UCF. /usr/share/ufw/*.rules may legitimately be package symlinks.
+    template=$(rm_path "/usr/share/ufw/iptables/$base")
     history=$(rm_path "/usr/share/ufw/$base.md5sum")
 
     if [[ ! -f $path || -L $path ]]; then
