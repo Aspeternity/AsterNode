@@ -107,8 +107,12 @@ update_manifest_path_valid() {
 }
 
 update_verify_release_dir() {
-  local dir=$1 key=${2:-$RM_TRUSTED_RELEASE_KEY} manifest="$dir/MANIFEST.json" sums="$dir/SHA256SUMS" sig="$dir/RELEASE.sig"
+  local dir=$1 key=${2:-$RM_TRUSTED_RELEASE_KEY}
+  local manifest sums sig
   local version expected_root count i p file sha size mode actual_sha actual_size actual_mode tmp_expected tmp_sums expected_count actual_count
+  manifest="$dir/MANIFEST.json"
+  sums="$dir/SHA256SUMS"
+  sig="$dir/RELEASE.sig"
   [[ -d $dir && ! -L $dir ]] || return "$RM_RC_PRECONDITION"
   [[ -f $manifest && ! -L $manifest && -f $sums && ! -L $sums && -f $sig && ! -L $sig ]] || {
     rm_error '发行包缺少普通 manifest/checksum/signature 文件'
