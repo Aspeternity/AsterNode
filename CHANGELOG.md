@@ -2,6 +2,7 @@
 
 ## Unreleased - Stage D maintenance development
 
+- Real-VPS Target probing now parses full OpenSSL TLS output from temporary files, eliminating the -brief ALPN false-negative/NUL-command-substitution issue; candidate probing also filters HTTP redirects, expands the versioned candidate pool, and reports a measured recommended Target without auto-applying it.
 - Added signed, manifest-verified manager release packages with pinned trust-anchor handling and controlled version-directory switching.
 - Added a generator for fixed-version HTTPS bootstrap scripts that pin both package and release-public-key SHA-256 values and reject unsafe archive paths/types before extraction.
 - Manager package installation now requires the fixed outer package SHA-256; the bootstrap never follows floating `main` or `latest`.

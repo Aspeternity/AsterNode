@@ -61,10 +61,11 @@ tested_at:
 
 在落地 VPS 上对候选与手工 Target 运行探测，记录 DNS/TCP/TLS1.3/证书/H2/重复握手/延迟。
 
-- HTTP 非 200 不自动判坏。
-- 不自动替换节点 Target。
+- HTTP 非 200 不自动判坏；HTTP 重定向不进入推荐结果。
+- 内置候选探测必须输出 `recommended`：只从 `recommendable=true` 且 `suitable_measured` 的结果中按当前 VPS 实测握手延迟选择，同延迟时才优先官方参考候选。
+- `recommended` 只是本机实测推荐，不自动替换或写入节点 Target。
 - Target 不得指回本节点监听端点形成循环。
-- CDN/共享目标需记录未认证回落转发的滥用风险判断。
+- Cloudflare 等共享 CDN 候选可以保留作对照，但默认不参与推荐，并需记录未认证回落转发的滥用风险判断。
 
 ## B-VPS-05：真实客户端（T24）
 

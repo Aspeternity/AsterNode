@@ -1,22 +1,95 @@
 {
-  "schema_version": 1,
-  "updated": "2026-10-02",
+  "schema_version": 2,
+  "updated": "2026-10-03",
   "candidates": [
+    {
+      "target": "dl.google.com:443",
+      "sni": "dl.google.com",
+      "recommendable": true,
+      "official_reference": true,
+      "risk_class": "standard",
+      "note": "XTLS REALITY 官方说明列为握手特征加分示例；仍必须在当前 VPS 实测"
+    },
     {
       "target": "www.microsoft.com:443",
       "sni": "www.microsoft.com",
-      "note": "通用候选；必须在目标 VPS 实测"
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
     },
     {
       "target": "www.amazon.com:443",
       "sni": "www.amazon.com",
-      "note": "通用候选；必须在目标 VPS 实测"
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
+    },
+    {
+      "target": "www.google.com:443",
+      "sni": "www.google.com",
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
+    },
+    {
+      "target": "www.wikipedia.org:443",
+      "sni": "www.wikipedia.org",
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
+    },
+    {
+      "target": "www.mozilla.org:443",
+      "sni": "www.mozilla.org",
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
+    },
+    {
+      "target": "www.bing.com:443",
+      "sni": "www.bing.com",
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
+    },
+    {
+      "target": "www.debian.org:443",
+      "sni": "www.debian.org",
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
+    },
+    {
+      "target": "www.ibm.com:443",
+      "sni": "www.ibm.com",
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
+    },
+    {
+      "target": "www.oracle.com:443",
+      "sni": "www.oracle.com",
+      "recommendable": true,
+      "official_reference": false,
+      "risk_class": "standard",
+      "note": "通用候选；必须在当前 VPS 实测"
     },
     {
       "target": "www.cloudflare.com:443",
       "sni": "www.cloudflare.com",
-      "note": "通用候选；必须在目标 VPS 实测"
+      "recommendable": false,
+      "official_reference": false,
+      "risk_class": "shared-cdn-forwarding",
+      "note": "仅保留作对照候选；XTLS 文档警告 Cloudflare 等特殊 CDN Target 可能形成未认证流量转发，因此不参与自动推荐"
     }
   ],
-  "policy": "候选仅用于探测，不自动选择；要求 DNS/TCP/TLS1.3/证书/H2/重复握手实测。HTTP 非 200 单独解释；CDN/特殊网络目标需额外审查未认证回落转发风险。"
+  "policy": "候选只用于当前 VPS 的受控探测。最低推荐条件为 DNS/TCP/TLS1.3/证书/H2/重复握手通过且目标域名不发生 HTTP 重定向；HTTP 非 200 本身不自动判坏。recommended 只从 recommendable=true 的 suitable_measured 候选中按实测握手延迟最低选择，official_reference 仅在相同延迟时作为次级排序；推荐不会自动写入节点配置。CDN/特殊网络目标需额外审查未认证回落转发风险。"
 }

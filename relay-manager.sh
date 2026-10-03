@@ -41,7 +41,7 @@ quick_deploy() {
   xray_check_external_conflict || return $?
   if ! xray_core_installed "$(xray_default_version)"; then rm_confirm "安装已验证 Xray $(xray_default_version)?" || return "$RM_RC_CANCEL"; xray_core_install; fi
   xray_service_install
-  printf '可选 REALITY Target 探测（只读，本次结果不自动选择）\n' >&2
+  printf '可选 REALITY Target 探测（只读，会给出 recommended，但不会自动写入节点配置）\n' >&2
   if rm_confirm '现在探测版本内置候选?'; then target_probe_candidates | jq .; fi
   local tmpdir nodepart upname source spec answer
   tmpdir=$(rm_safe_tmpdir); nodepart="$tmpdir/node.json"; spec="$tmpdir/spec.json"
@@ -278,7 +278,7 @@ AsterNode CLI
   relay-manager doctor export ABS_PATH [--network]  导出 0600 脱敏诊断包（默认不联网）
   relay-manager doctor record-d4 NODE UPSTREAM EXIT_IP PANEL_VERSION CORE_VERSION [ROUTE_NOTE]
   relay-manager target candidates    查看版本内置 Target 候选（不联网）
-  relay-manager target probe-candidates  对候选执行受控联网探测
+  relay-manager target probe-candidates  对候选执行受控联网探测并给出当前 VPS 推荐 Target
   relay-manager target probe TARGET SNI  探测指定 Target
   relay-manager core install [VERSION]   安装兼容矩阵固定 Xray
   relay-manager node list|show ID|create FILE|replace FILE|enable ID|disable ID|delete ID|rotate-reality ID
