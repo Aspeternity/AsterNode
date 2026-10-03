@@ -216,9 +216,17 @@ fw_install_packages() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ufw || return "$RM_RC_PRECONDITION"
 }
 
+fw_detect_ssh_ports_json() {
+  if [[ ${RM_TEST_MODE} == 1 && -n ${RM_UFW_TEST_SSH_PORTS:-} ]]; then
+    tr ',' '\n' <<<"$RM_UFW_TEST_SSH_PORTS" | jq -R -s 'split("\n")|map(select(length>0)|tonumber)|unique'
+  else
+    system_ssh_json root 127.0.0.1 | jq '(.actual_listen_ports + .effective.ports)|unique'
+  fi
+}
+
 fw_enable_safe() {
   rm_require_root || return $?
-  local s ports_json p rule comment added='[]'
+  local s ssh_ports preserve_ports='[]' p rule comment added='[]' arg
   s=$(fw_status_json)
   jq -e '.installed==true and .complex_environment==false and .framework_integrity.status=="ok"' <<<"$s" >/dev/null || {
     rm_error "UFW 环境不能安全启用: $(jq -c . <<<"$s")"
@@ -229,26 +237,41 @@ fw_enable_safe() {
     return 0
   fi
 
-  if (($#)); then
-    ports_json=$(printf '%s\n' "$@" | jq -R -s 'split("\n")|map(select(length>0)|tonumber)|unique')
-  else
-    ports_json=$(system_ssh_json root 127.0.0.1 | jq '(.actual_listen_ports + .effective.ports)|unique')
-  fi
-  [[ $(jq 'length' <<<"$ports_json") -gt 0 ]] || {
+  while (($#)); do
+    arg=$1; shift
+    case "$arg" in
+      --preserve-port)
+        (($#)) || { rm_error '--preserve-port 缺少端口'; return "$RM_RC_PRECONDITION"; }
+        p=$1; shift
+        rm_valid_port "$p" || return "$RM_RC_PRECONDITION"
+        preserve_ports=$(jq -c --argjson p "$p" '.+[$p]|unique' <<<"$preserve_ports")
+        ;;
+      *)
+        rm_error "未知 UFW enable 参数: $arg（业务入口请使用 --preserve-port PORT）"
+        return "$RM_RC_PRECONDITION"
+        ;;
+    esac
+  done
+
+  ssh_ports=$(fw_detect_ssh_ports_json)
+  [[ $(jq 'length' <<<"$ssh_ports") -gt 0 ]] || {
     rm_error '无法确定现有 SSH 监听端口，拒绝启用 UFW。'
     return "$RM_RC_PRECONDITION"
   }
-  for p in $(jq -r '.[]' <<<"$ports_json"); do rm_valid_port "$p" || return "$RM_RC_PRECONDITION"; done
+  for p in $(jq -r '.[]' <<<"$ssh_ports"); do rm_valid_port "$p" || return "$RM_RC_PRECONDITION"; done
+  preserve_ports=$(jq -c --argjson ssh "$ssh_ports" '[.[]|select(. as $p|($ssh|index($p)|not))]|unique' <<<"$preserve_ports")
 
   if [[ ${RM_TEST_MODE} != 1 ]]; then
     rm_tty_available || return "$RM_RC_PRECONDITION"
-    rm_info '启用前检测到的监听服务如下；不会自动开放除 SSH 外的端口：'
+    rm_info '启用前检测到的监听服务如下；不会自动开放扫描到的非 SSH 端口：'
     system_network_json | jq '.listeners' >&2
-    rm_confirm "将先允许 SSH 端口 $(jq -r 'join(",")' <<<"$ports_json")，然后启用 UFW；现有默认策略保持不变。继续?" || return "$RM_RC_CANCEL"
+    rm_info "SSH 将保留: $(jq -r 'join(",")' <<<"$ssh_ports")"
+    rm_info "显式保留的其他 TCP 端口: $(jq -r 'if length==0 then "无" else join(",") end' <<<"$preserve_ports")"
+    rm_confirm '确认这些就是启用 UFW 后需要保留的本机入口？现有 UFW 默认策略保持不变。' || return "$RM_RC_CANCEL"
   fi
 
   state_init >/dev/null
-  for p in $(jq -r '.[]' <<<"$ports_json"); do
+  for p in $(jq -r '.[]' <<<"$ssh_ports"); do
     comment="relay-manager:ssh:$p"
     rule=$(fw_rule_args_json allow any "$p" "$comment")
     if ! fw_exec_rule_json "$rule" add append; then
@@ -256,6 +279,15 @@ fw_enable_safe() {
       return "$RM_RC_APPLY_ROLLED_BACK"
     fi
     added=$(jq -c --argjson r "$(jq -n --arg c "$comment" --argjson p "$p" --argjson a "$rule" '{comment:$c,port:$p,kind:"ssh-allow",source:"any",args:$a}')" '.+[$r]' <<<"$added")
+  done
+  for p in $(jq -r '.[]' <<<"$preserve_ports"); do
+    comment="relay-manager:preserve:$p"
+    rule=$(fw_rule_args_json allow any "$p" "$comment")
+    if ! fw_exec_rule_json "$rule" add append; then
+      while IFS= read -r rr; do [[ -n $rr ]] && fw_exec_rule_json "$(jq -c .args <<<"$rr")" delete || true; done < <(jq -c '.[]' <<<"$added" | tac)
+      return "$RM_RC_APPLY_ROLLED_BACK"
+    fi
+    added=$(jq -c --argjson r "$(jq -n --arg c "$comment" --argjson p "$p" --argjson a "$rule" '{comment:$c,port:$p,kind:"preserve-allow",source:"any",args:$a}')" '.+[$r]' <<<"$added")
   done
 
   if ! fw_ufw --force enable; then
@@ -266,7 +298,8 @@ fw_enable_safe() {
     return "$RM_RC_RECOVERY_INCOMPLETE"
   fi
   state_update_filter '.owned_firewall_rules=((.owned_firewall_rules + $rules)|unique_by(.comment))' --argjson rules "$added"
-  jq -n --argjson ports "$ports_json" '{status:"enabled",ssh_ports_preserved:$ports,default_policy_preserved:true}'
+  jq -n --argjson ssh "$ssh_ports" --argjson preserve "$preserve_ports"     '{status:"enabled",ssh_ports_preserved:$ssh,business_ports_preserved:$preserve,default_policy_preserved:true,
+      note:"仅开放已确认 SSH 入口和显式 --preserve-port 业务入口；未自动开放其他监听端口。"}'
 }
 
 fw_ensure_ssh_port() {

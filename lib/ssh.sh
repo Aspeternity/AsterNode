@@ -46,8 +46,72 @@ ssh_effective_value() {
   awk -v k="$key" '$1==k {$1=""; sub(/^ /,""); print; exit}' <<<"$text"
 }
 
+ssh_service_unit_name() {
+  local mode
+  mode=$(ssh_service_mode)
+  case "$mode" in
+    service:ssh) printf 'ssh.service\n' ;;
+    service:sshd) printf 'sshd.service\n' ;;
+    socket) printf 'ssh@.service\n' ;;
+    *) return "$RM_RC_PRECONDITION" ;;
+  esac
+}
+
+ssh_systemd_execstart_text() {
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    printf '%s\n' "${RM_SSH_TEST_EXECSTART:-/usr/sbin/sshd -D}"
+    return 0
+  fi
+  local unit out=''
+  unit=$(ssh_service_unit_name) || return $?
+  out=$(systemctl show "$unit" -p ExecStart --value 2>/dev/null || true)
+  if [[ -z $out && $unit == ssh@.service ]]; then
+    out=$(systemctl show sshd@.service -p ExecStart --value 2>/dev/null || true)
+  fi
+  [[ -n $out ]] || return "$RM_RC_PRECONDITION"
+  printf '%s\n' "$out"
+}
+
+ssh_default_sshd_opts_text() {
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    printf '%s\n' "${RM_SSH_TEST_SSHD_OPTS:-}"
+    return 0
+  fi
+  local f raw=''
+  f=$(rm_path /etc/default/ssh)
+  [[ -f $f && ! -L $f ]] || { printf '\n'; return 0; }
+  raw=$(sed -nE 's/^[[:space:]]*SSHD_OPTS[[:space:]]*=(.*)$/\1/p' "$f" | tail -n1)
+  raw=${raw#"${raw%%[![:space:]]*}"}; raw=${raw%"${raw##*[![:space:]]}"}
+  if [[ $raw == \"*\" && $raw == *\" ]]; then raw=${raw:1:${#raw}-2}; fi
+  if [[ $raw == \'*\' && $raw == *\' ]]; then raw=${raw:1:${#raw}-2}; fi
+  printf '%s\n' "$raw"
+}
+
+ssh_startup_args_json() {
+  local exec='' opts='' combined overrides='[]' status=ok unresolved=false
+  if ! exec=$(ssh_systemd_execstart_text); then status=unverified; fi
+  opts=$(ssh_default_sshd_opts_text 2>/dev/null || true)
+  combined="$exec $opts"
+  if grep -Eq '\$\{?SSHD_OPTS\}?' <<<"$exec"; then
+    local default_file
+    default_file=$(rm_path /etc/default/ssh)
+    if [[ ${RM_TEST_MODE} != 1 && ! -f $default_file ]]; then unresolved=true; status=unverified; fi
+  fi
+  if grep -Eq '(^|[[:space:];])-f([^[:space:];]*|[[:space:]]+[^[:space:];]+)' <<<"$combined"; then
+    overrides=$(jq -c '.+["custom-config(-f)"]' <<<"$overrides")
+  fi
+  if grep -Eq '(^|[[:space:];])-p([=0-9]|[[:space:]])' <<<"$combined"; then
+    overrides=$(jq -c '.+["port-override(-p)"]' <<<"$overrides")
+  fi
+  if grep -Eq '(^|[[:space:];])-o([^[:space:];]*|[[:space:]]+[^[:space:];]+)' <<<"$combined"; then
+    overrides=$(jq -c '.+["option-override(-o)"]' <<<"$overrides")
+  fi
+  jq -n --arg status "$status" --arg exec "$exec" --arg opts "$opts"     --argjson unresolved "$unresolved" --argjson overrides "$overrides"     '{status:$status,execstart:$exec,sshd_opts:$opts,unresolved_environment:$unresolved,
+      config_overrides:$overrides,safe_for_automatic_tightening:($status=="ok" and ($overrides|length)==0 and ($unresolved|not))}'
+}
+
 ssh_automation_blockers_json() {
-  local user=${1:-root} addr=${2:-127.0.0.1} eff authcmd authmethods trusted principals akf blockers='[]'
+  local user=${1:-root} addr=${2:-127.0.0.1} eff authcmd authmethods trusted principals akf blockers='[]' startup startup_status startup_overrides
   eff=$(ssh_effective_text "$user" "$addr" localhost) || {
     jq -n '["sshd-effective-config-unavailable"]'
     return 0
@@ -62,29 +126,51 @@ ssh_automation_blockers_json() {
   [[ -n $principals && $principals != none ]] && blockers=$(jq -c --arg v "authorizedprincipalscommand:$principals" '.+[$v]' <<<"$blockers")
   [[ -n $authmethods && $authmethods != any ]] && blockers=$(jq -c --arg v "authenticationmethods:$authmethods" '.+[$v]' <<<"$blockers")
   [[ -z $akf || $akf == none ]] && blockers=$(jq -c '.+["authorizedkeysfile:none-or-missing"]' <<<"$blockers")
+  startup=$(ssh_startup_args_json)
+  startup_status=$(jq -r .status <<<"$startup")
+  startup_overrides=$(jq -r '.config_overrides|join(",")' <<<"$startup")
+  [[ $startup_status == ok ]] || blockers=$(jq -c '.+["startup-arguments-unverified"]' <<<"$blockers")
+  [[ -z $startup_overrides ]] || blockers=$(jq -c --arg v "startup-config-overrides:$startup_overrides" '.+[$v]' <<<"$blockers")
+  [[ $(jq -r '.unresolved_environment' <<<"$startup") == false ]] || blockers=$(jq -c '.+["startup-environment-unresolved"]' <<<"$blockers")
   printf '%s\n' "$blockers"
 }
 
 ssh_config_trace_json() {
-  local items='[]' p
-  for p in /etc/ssh/sshd_config /etc/ssh/sshd_config.d /etc/ssh/sshd_config.d/50-cloud-init.conf; do
-    local rp; rp=$(rm_path "$p")
-    if [[ -e $rp ]]; then
-      items=$(jq -c --arg p "$p" '.+[$p]' <<<"$items")
+  local main dir f logical files='[]' include_directives='[]' match_files='[]' cloud=false
+  main=$(rm_path /etc/ssh/sshd_config)
+  dir=$(rm_path /etc/ssh/sshd_config.d)
+  local -a candidates=()
+  [[ -f $main && ! -L $main ]] && candidates+=("$main")
+  if [[ -d $dir && ! -L $dir ]]; then
+    while IFS= read -r f; do candidates+=("$f"); done < <(find "$dir" -maxdepth 1 -type f -name '*.conf' -print 2>/dev/null | sort)
+  fi
+  for f in "${candidates[@]}"; do
+    logical=$f
+    [[ -n $RM_ROOT ]] && logical=${f#"${RM_ROOT%/}"}
+    files=$(jq -c --arg p "$logical" '.+[$p]|unique' <<<"$files")
+    if grep -Eq '^[[:space:]]*Match([[:space:]]|$)' "$f"; then
+      match_files=$(jq -c --arg p "$logical" '.+[$p]|unique' <<<"$match_files")
     fi
+    while IFS= read -r inc; do
+      [[ -n $inc ]] || continue
+      include_directives=$(jq -c --arg p "$logical" --arg v "$inc" '.+[{file:$p,value:$v}]' <<<"$include_directives")
+    done < <(awk 'tolower($1)=="include"{$1="";sub(/^[[:space:]]+/,"");print}' "$f")
   done
-  jq -n --argjson items "$items" '{detected_paths:$items}'
+  [[ -f $(rm_path /etc/ssh/sshd_config.d/50-cloud-init.conf) ]] && cloud=true
+  jq -n --argjson files "$files" --argjson includes "$include_directives" --argjson matches "$match_files" --argjson cloud "$cloud"     '{detected_files:$files,include_directives:$includes,match_files:$matches,match_detected:($matches|length>0),
+      cloud_init_present:$cloud,effective_policy_source:"sshd -T -C"}'
 }
 
 ssh_detect_json() {
   local user=${1:-root} addr=${2:-127.0.0.1} mode effective=''
   mode=$(ssh_service_mode)
   if effective=$(ssh_effective_text "$user" "$addr" localhost 2>/dev/null); then :; else effective=''; fi
-  local ports='[]' actual='[]' blockers='[]' trace
+  local ports='[]' actual='[]' blockers='[]' trace startup
   if [[ -n $effective ]]; then ports=$(awk '$1=="port"{print $2}' <<<"$effective" | jq -R -s 'split("\n")|map(select(length>0)|tonumber)|unique'); fi
   actual=$(ssh_listen_ports | jq -R -s 'split("\n")|map(select(length>0)|tonumber)|unique')
   blockers=$(ssh_automation_blockers_json "$user" "$addr")
   trace=$(ssh_config_trace_json)
+  startup=$(ssh_startup_args_json)
   jq -n --arg mode "$mode" --arg user "$user" --argjson effective_ports "$ports" --argjson actual_ports "$actual" \
     --arg pubkey "$(awk '$1=="pubkeyauthentication"{print $2;exit}' <<<"$effective")" \
     --arg pass "$(awk '$1=="passwordauthentication"{print $2;exit}' <<<"$effective")" \
@@ -95,8 +181,8 @@ ssh_detect_json() {
     --arg akc "$(ssh_effective_value "$effective" authorizedkeyscommand)" \
     --arg trusted "$(ssh_effective_value "$effective" trustedusercakeys)" \
     --arg principals "$(ssh_effective_value "$effective" authorizedprincipalscommand)" \
-    --argjson blockers "$blockers" --argjson trace "$trace" \
-    '{user:$user,start_mode:$mode,effective:{ports:$effective_ports,pubkey_authentication:$pubkey,password_authentication:$pass,kbd_interactive_authentication:$kbd,permit_root_login:$root,authentication_methods:$authm,authorized_keys_file:$akf,authorized_keys_command:$akc,trusted_user_ca_keys:$trusted,authorized_principals_command:$principals},actual_listen_ports:$actual_ports,automation_tightening_safe:($blockers|length==0),automation_blockers:$blockers,config_trace:$trace,auth_method_verified:false,note:"SSH_CONNECTION 只作线索；本结果不自动证明当前会话认证方式"}'
+    --argjson blockers "$blockers" --argjson trace "$trace" --argjson startup "$startup" \
+    '{user:$user,start_mode:$mode,effective:{ports:$effective_ports,pubkey_authentication:$pubkey,password_authentication:$pass,kbd_interactive_authentication:$kbd,permit_root_login:$root,authentication_methods:$authm,authorized_keys_file:$akf,authorized_keys_command:$akc,trusted_user_ca_keys:$trusted,authorized_principals_command:$principals},actual_listen_ports:$actual_ports,automation_tightening_safe:($blockers|length==0),automation_blockers:$blockers,config_trace:$trace,startup:$startup,auth_method_verified:false,note:"SSH_CONNECTION 只作线索；本结果不自动证明当前会话认证方式"}'
 }
 
 ssh_main_config_test() { local bin; bin=$(ssh_sshd_bin) || return $?; "$bin" -t; }
@@ -131,6 +217,20 @@ ssh_public_key_material() {
   awk '{for(i=1;i<=NF;i++) if($i ~ /^(ssh-|ecdsa-|sk-)/ && (i+1)<=NF){print $(i+1); exit}}' <<<"$line"
 }
 
+ssh_public_key_type() {
+  local line=$1
+  awk '{for(i=1;i<=NF;i++) if($i ~ /^(ssh-|ecdsa-|sk-)/ && (i+1)<=NF){print $i; exit}}' <<<"$line"
+}
+
+ssh_key_fingerprint_from_line() {
+  local line=$1 tmp out
+  tmp=$(mktemp) || return "$RM_RC_INTERNAL"
+  printf '%s\n' "$line" >"$tmp"
+  out=$(ssh-keygen -lf "$tmp" 2>/dev/null) || { rm -f "$tmp"; return "$RM_RC_PRECONDITION"; }
+  rm -f "$tmp"
+  awk '{print $2; exit}' <<<"$out"
+}
+
 ssh_validate_public_key_file() {
   local f=$1
   [[ -f $f && ! -L $f ]] || return "$RM_RC_PRECONDITION"
@@ -147,17 +247,19 @@ ssh_validate_public_key_file() {
 }
 
 ssh_key_inventory_json() {
-  local user=$1 path line tmp fp bits kind items='[]'
+  local user=$1 path line fp bits kind items='[]' tmp
   path=$(ssh_authorized_keys_path "$user") || return $?
   [[ -f $path && ! -L $path ]] || { jq -n --arg user "$user" --arg path "$path" '{user:$user,path:$path,keys:[]}'; return 0; }
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n $line ]]; do
     [[ -n $line && ! $line =~ ^[[:space:]]*# ]] || continue
     [[ -n $(ssh_public_key_material "$line") ]] || continue
+    fp=$(ssh_key_fingerprint_from_line "$line" 2>/dev/null || true)
+    [[ -n $fp ]] || continue
     tmp=$(mktemp); printf '%s\n' "$line" >"$tmp"
-    if read -r bits fp kind _ < <(ssh-keygen -lf "$tmp" 2>/dev/null); then
-      items=$(jq -c --arg fp "$fp" --arg kind "$kind" --argjson bits "$bits" '.+[{fingerprint:$fp,type:$kind,bits:$bits}]' <<<"$items")
-    fi
+    bits=$(ssh-keygen -lf "$tmp" 2>/dev/null | awk '{print $1;exit}')
     rm -f "$tmp"
+    kind=$(ssh_public_key_type "$line")
+    items=$(jq -c --arg fp "$fp" --arg kind "$kind" --argjson bits "${bits:-0}" '.+[{fingerprint:$fp,type:$kind,bits:$bits}]' <<<"$items")
   done <"$path"
   jq -n --arg user "$user" --arg path "$path" --argjson keys "$items" '{user:$user,path:$path,keys:$keys}'
 }
@@ -217,6 +319,59 @@ ssh_add_public_key() {
   tx_commit "$tx" || return $?
   fingerprint=$(ssh-keygen -lf "$keyfile" 2>/dev/null | awk '{print $2;exit}')
   jq -n --arg user "$user" --arg path "$path" --arg fp "$fingerprint" '{status:"added",user:$user,path:$path,fingerprint:$fp}'
+}
+
+ssh_remove_public_key() {
+  local user=$1 fingerprint=$2 path owner inv verified='[]' verified_present=0 target_verified=false fp line tmp tx rc=0 removed=0 ans
+  rm_require_root || return $?
+  [[ -n $user && -n $fingerprint ]] || return "$RM_RC_PRECONDITION"
+  path=$(ssh_authorized_keys_path "$user") || return $?
+  [[ -f $path && ! -L $path ]] || { rm_error 'AuthorizedKeysFile 不存在或不是普通文件'; return "$RM_RC_PRECONDITION"; }
+  owner=$(ssh_uid_gid_for_user "$user"); [[ -n $owner ]] || return "$RM_RC_PRECONDITION"
+  inv=$(ssh_key_inventory_json "$user") || return $?
+  jq -e --arg fp "$fingerprint" 'any(.keys[]?; .fingerprint==$fp)' <<<"$inv" >/dev/null || {
+    rm_error '指定 fingerprint 不在当前 AuthorizedKeysFile 中'
+    return "$RM_RC_PRECONDITION"
+  }
+
+  state_init >/dev/null || return $?
+  verified=$(jq -c --arg u "$user" '.ssh_verifications[$u].verified_key_fingerprints // []' "$RM_STATE_FILE")
+  jq -e --arg fp "$fingerprint" 'index($fp)!=null' <<<"$verified" >/dev/null && target_verified=true || true
+  while IFS= read -r fp; do
+    [[ -n $fp ]] || continue
+    jq -e --arg fp "$fp" 'index($fp)!=null' <<<"$verified" >/dev/null 2>&1 && verified_present=$((verified_present+1)) || true
+  done < <(jq -r '.keys[]?.fingerprint' <<<"$inv")
+  if [[ $target_verified == true && $verified_present -le 1 ]]; then
+    rm_error '拒绝删除最后一个当前仍存在的已验证 SSH 公钥入口。请先添加并验证另一把密钥。'
+    return "$RM_RC_PRECONDITION"
+  fi
+
+  if [[ ${RM_TEST_MODE} == 1 && ${RM_SSH_TEST_REMOVE_KEY:-} == REMOVE ]]; then ans=REMOVE
+  else
+    rm_tty_available || return "$RM_RC_PRECONDITION"
+    rm_read_tty ans "将删除 $user 的 SSH 公钥 $fingerprint；输入 REMOVE 确认: "
+  fi
+  [[ $ans == REMOVE ]] || return "$RM_RC_CANCEL"
+
+  tmp=$(rm_safe_tmpdir)/authorized_keys
+  : >"$tmp"
+  while IFS= read -r line || [[ -n $line ]]; do
+    fp=''
+    if [[ -n $(ssh_public_key_material "$line") ]]; then fp=$(ssh_key_fingerprint_from_line "$line" 2>/dev/null || true); fi
+    if [[ -n $fp && $fp == "$fingerprint" ]]; then
+      removed=$((removed+1))
+      continue
+    fi
+    printf '%s\n' "$line" >>"$tmp"
+  done <"$path"
+  ((removed>0)) || return "$RM_RC_PRECONDITION"
+
+  tx=$(tx_begin ssh-remove-key) || return $?
+  tx_stage_file "$tx" "$tmp" "$path" 0600 "$owner" || { tx_rollback "$tx" 'key removal stage failed' || true; return "$RM_RC_PRECONDITION"; }
+  tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'key removal apply failed' || true; return "$rc"; }
+  tx_commit "$tx" || return $?
+  state_update_filter 'if .ssh_verifications[$user] then .ssh_verifications[$user].verified_key_fingerprints=[(.ssh_verifications[$user].verified_key_fingerprints//[])[]|select(.!=$fp)] else . end' --arg user "$user" --arg fp "$fingerprint"
+  jq -n --arg user "$user" --arg path "$path" --arg fp "$fingerprint" --argjson removed "$removed"     '{status:"removed",user:$user,path:$path,fingerprint:$fp,removed_entries:$removed}'
 }
 
 ssh_policy_load_or_init() {
@@ -334,6 +489,28 @@ ssh_pending_tx_id() {
   return 1
 }
 
+ssh_recovery_guide_json() {
+  local tx=${1:-} f='' change='' target_user=root deadline=null mode unit
+  if [[ -z $tx ]]; then tx=$(ssh_pending_tx_id 2>/dev/null || true); fi
+  if [[ -n $tx && -f $(tx_file "$tx") ]]; then
+    f=$(tx_file "$tx")
+    change=$(jq -r '.ssh.change // ""' "$f")
+    target_user=$(jq -r '.ssh.target_user // "root"' "$f")
+    deadline=$(jq -r '.deadline_epoch // null' "$f")
+  fi
+  mode=$(ssh_service_mode)
+  case "$mode" in socket) unit=ssh.socket;; service:ssh) unit=ssh.service;; service:sshd) unit=sshd.service;; *) unit=unknown;; esac
+  jq -n --arg tx "$tx" --arg change "$change" --arg user "$target_user" --arg mode "$mode" --arg unit "$unit" --argjson deadline "$deadline"     '{pending:($tx!=""),transaction_id:(if $tx=="" then null else $tx end),change:(if $change=="" then null else $change end),
+      target_user:$user,deadline_epoch:$deadline,start_mode:$mode,
+      local_console_steps:[
+        "保持现有 SSH 会话；若远程已不可达，使用 VPS/云厂商控制台登录。",
+        "执行 relay-manager ssh rollback-pending 恢复最后已提交的本机 SSH 配置。",
+        ("执行 sshd -t，并检查 systemctl status "+$unit+" 与 ss -lntp。"),
+        "确认云安全组、防火墙/NAT 映射与目标 SSH 端口一致；本机回滚无法修复云侧阻断。"
+      ],
+      boundary:"AsterNode 只能恢复其管理的本机配置，不能承诺修复云安全组、供应商网络故障或损坏的系统。"}'
+}
+
 ssh_apply_policy_protected() {
   local policy=$1 change=$2 target_user=${3:-root} deadline=${4:-$(( $(rm_epoch)+300 ))} mode tmpdir drop socket tx rc service_unit
   rm_require_root || return $?
@@ -353,7 +530,7 @@ ssh_apply_policy_protected() {
   tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'SSH apply failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$rc"; }
   if ! ssh_main_config_test || ! ssh_restart_mode "$mode"; then rc=$RM_RC_APPLY_ROLLED_BACK; tx_rollback "$tx" 'SSHD syntax/restart failed' || rc=$?; ssh_restart_mode "$mode" || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$rc"; fi
   rm -rf "$tmpdir"
-  jq -n --arg tx "$tx" --arg change "$change" --argjson deadline "$deadline" '{status:"pending_manual_verification",transaction_id:$tx,change:$change,deadline_epoch:$deadline,note:"请保持当前会话，另开一个全新 SSH 连接验证后再执行 ssh confirm。"}'
+  jq -n --arg tx "$tx" --arg change "$change" --argjson deadline "$deadline" '{status:"pending_manual_verification",transaction_id:$tx,change:$change,deadline_epoch:$deadline,recovery_command:"relay-manager ssh recovery-guide",note:"请保持当前会话，另开一个全新 SSH 连接验证后再执行 ssh confirm；本机回滚不能修复云安全组或 NAT 阻断。"}'
 }
 
 ssh_begin_port_migration() {

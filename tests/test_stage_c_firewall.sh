@@ -11,6 +11,7 @@ export RM_UFW_ADDED_FILE="$root/ufw-added.txt"
 export RM_UFW_RAW_FILE="$root/ufw-raw.txt"
 export RM_UFW_FRAMEWORK_MODIFIED=false
 export RM_SYSTEMCTL_LOG="$root/systemctl.log"
+export RM_UFW_TEST_SSH_PORTS=22
 
 mkdir -p "$root/etc/default"
 cat >"$root/etc/default/ufw" <<'EOF'
@@ -26,10 +27,17 @@ state_init
 cat >"$RM_UFW_STATUS_FILE" <<'EOF'
 Status: inactive
 EOF
-enabled=$(fw_enable_safe 22)
-assert_json "$enabled" '.status=="enabled" and .ssh_ports_preserved==[22] and .default_policy_preserved==true'
+enabled=$(fw_enable_safe --preserve-port 8443)
+assert_json "$enabled" '.status=="enabled" and .ssh_ports_preserved==[22] and .business_ports_preserved==[8443] and .default_policy_preserved==true'
 grep -Fq -- '--force enable' "$RM_UFW_LOG" || fail 'safe UFW enable was not requested'
-assert_json "$(cat "$RM_STATE_FILE")" 'any(.owned_firewall_rules[]; .kind=="ssh-allow" and .port==22)'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  any(.owned_firewall_rules[]; .kind=="ssh-allow" and .port==22) and
+  any(.owned_firewall_rules[]; .kind=="preserve-allow" and .port==8443)
+'
+grep -Fq 'allow to any port 8443' "$RM_UFW_LOG" || fail 'explicit business preserve port was not allowed'
+if grep -Fq 'allow to any port 443' "$RM_UFW_LOG"; then
+  fail 'unconfirmed business listener was opened automatically'
+fi
 
 cat >"$RM_UFW_STATUS_FILE" <<'EOF'
 Status: active

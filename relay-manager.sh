@@ -179,15 +179,17 @@ ssh_cmd() {
     key-inventory) ssh_key_inventory_json "$1";;
     verify-command) ssh_verification_command_json "$1" "$2" "${3:-}";;
     add-key) mutation_guard; ssh_add_public_key "$1" "$2";;
+    remove-key) mutation_guard; ssh_remove_public_key "$1" "$2";;
     migrate-port) mutation_guard; ssh_begin_port_migration "$1";;
     remove-old-port) mutation_guard; ssh_begin_remove_old_port "$1";;
-    mark-key-verified) mutation_guard; ssh_mark_key_verified "$1";;
+    mark-key-verified) mutation_guard; ssh_mark_key_verified "$1" "${2:-}";;
     disable-password) mutation_guard; ssh_begin_disable_password "$1";;
     verify-sudo) mutation_guard; ssh_record_sudo_verified "$1";;
     root-publickey-only) mutation_guard; ssh_begin_root_policy publickey-only root;;
     root-disable) mutation_guard; ssh_begin_root_policy disable "$1";;
     confirm) mutation_guard; ssh_confirm_pending "${1:-}";;
     rollback-pending) rm_require_root; ssh_rollback_pending;;
+    recovery-guide) ssh_recovery_guide_json "${1:-}";;
     *) return "$RM_RC_PRECONDITION";;
   esac
 }
@@ -280,12 +282,12 @@ AsterNode CLI
                     source-add ID IP_OR_CIDR|source-remove ID IP_OR_CIDR
                     rotate-prepare ID [SEC]|rotate-commit ID|rotate-cancel ID
   relay-manager export UPSTREAM [current|pending] [--show]
-  relay-manager firewall status|install|enable [SSH_PORT...]|apply NODE [SOURCE...]|verify NODE
+  relay-manager firewall status|install|enable [--preserve-port PORT]...|apply NODE [SOURCE...]|verify NODE
                     remove-node NODE|temp-open NODE [MIN]|expire-temp NODE
   relay-manager ssh status [USER]|key-inventory USER|verify-command USER HOST [PORT]
-                    add-key USER FILE|migrate-port PORT|remove-old-port PORT
+                    add-key USER FILE|remove-key USER FINGERPRINT|migrate-port PORT|remove-old-port PORT
                     mark-key-verified USER [FINGERPRINT]|disable-password USER|verify-sudo USER
-                    root-publickey-only|root-disable ADMIN_USER|confirm [TX]|rollback-pending
+                    root-publickey-only|root-disable ADMIN_USER|confirm [TX]|rollback-pending|recovery-guide [TX]
   relay-manager fail2ban status|recommend [USER]|install|apply [IGNORE_IP_OR_CIDR...]|disable|banned|unban IP
   relay-manager backup list|create [config|upgrade]|restore ID|restore-nodes ID
   relay-manager update status|core VERSION|manager-package FILE [SHA256]|rollback-manager
