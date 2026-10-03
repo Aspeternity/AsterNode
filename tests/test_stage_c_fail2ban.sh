@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'rc=$?; printf "FAIL: test_stage_c_fail2ban rc=%s line=%s command=%s\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; exit "$rc"' ERR
 source "$(dirname "$0")/testlib.sh"
 
 root=$(new_test_root)
