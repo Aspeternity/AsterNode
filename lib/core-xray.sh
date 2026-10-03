@@ -14,6 +14,8 @@ RM_MAINT_SERVICE="relay-manager-maintenance.service"
 RM_MAINT_TIMER="relay-manager-maintenance.timer"
 RM_MAINT_SERVICE_FILE="$(rm_path /etc/systemd/system/$RM_MAINT_SERVICE)"
 RM_MAINT_TIMER_FILE="$(rm_path /etc/systemd/system/$RM_MAINT_TIMER)"
+RM_FW_GUARD_SERVICE="relay-manager-firewall-guard.service"
+RM_FW_GUARD_SERVICE_FILE="$(rm_path /etc/systemd/system/$RM_FW_GUARD_SERVICE)"
 RM_XRAY_CONFIG="$(rm_path /etc/relay-manager-xray/config.json)"
 
 xray_default_version() { jq -er '.default_core_version' "$RM_COMPAT_FILE"; }
@@ -117,9 +119,11 @@ xray_service_install() {
   tx_record_service "$tx" "$RM_XRAY_SERVICE" || true
   tx_record_service "$tx" "$RM_MAINT_SERVICE" || true
   tx_record_service "$tx" "$RM_MAINT_TIMER" || true
+  tx_record_service "$tx" "$RM_FW_GUARD_SERVICE" || true
   tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-xray.service" "$RM_XRAY_SERVICE_FILE" 0644 root:root || rc=$?
   ((rc==0)) && tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-maintenance.service" "$RM_MAINT_SERVICE_FILE" 0644 root:root || rc=$?
   ((rc==0)) && tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-maintenance.timer" "$RM_MAINT_TIMER_FILE" 0644 root:root || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$RM_PROJECT_DIR/templates/relay-manager-firewall-guard.service" "$RM_FW_GUARD_SERVICE_FILE" 0644 root:root || rc=$?
   if ((rc!=0)); then tx_rollback "$tx" 'stage failed' || true; return "$RM_RC_PRECONDITION"; fi
   tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'apply failed' || true; return "$rc"; }
 
@@ -140,9 +144,11 @@ xray_service_install() {
   state_add_owned_file "/etc/systemd/system/$RM_XRAY_SERVICE" "$(rm_sha256_file "$RM_XRAY_SERVICE_FILE")"
   state_add_owned_file "/etc/systemd/system/$RM_MAINT_SERVICE" "$(rm_sha256_file "$RM_MAINT_SERVICE_FILE")"
   state_add_owned_file "/etc/systemd/system/$RM_MAINT_TIMER" "$(rm_sha256_file "$RM_MAINT_TIMER_FILE")"
+  state_add_owned_file "/etc/systemd/system/$RM_FW_GUARD_SERVICE" "$(rm_sha256_file "$RM_FW_GUARD_SERVICE_FILE")"
   state_add_owned_service "$RM_XRAY_SERVICE"
   state_add_owned_service "$RM_MAINT_SERVICE"
   state_add_owned_service "$RM_MAINT_TIMER"
+  state_add_owned_service "$RM_FW_GUARD_SERVICE"
 }
 xray_test_config() {
   local cfg=${1:-$RM_XRAY_CONFIG} bin=${2:-$(xray_current_binary)} out rc
