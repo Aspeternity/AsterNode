@@ -6,17 +6,18 @@ source "$BASE_DIR/lib/system.sh"
 
 usage() {
   cat <<'TXT'
-Relay Manager installer (Stage-A development entry)
+AsterNode / Relay Manager installer
 Usage:
   ./install.sh                  Existing managed installation: enter local manager; otherwise install this source tree.
   ./install.sh --install-source Explicitly install this source tree.
-  ./install.sh --package FILE --sha256 HEX
+  ./install.sh --package FILE --sha256 HEX [--trusted-key PUBLIC_KEY]
 
 Notes:
   * The source-tree path is for development and isolated validation.
-  * Release-package signature/trust-anchor publishing belongs to Stage D. --package already routes through
-    the signed-package verifier and therefore refuses unsigned/untrusted packages.
-  * No default remote domain is invented. A future short remote bootstrap must pin an explicit release source.
+  * --package requires a signed release package. First-install trust can be supplied explicitly with --trusted-key.
+  * An existing trusted key is never silently replaced; key rotation is a separate Stage-D operation.
+  * No default remote domain is invented. The public one-line bootstrap will be generated from an explicit fixed
+    release URL, package SHA-256 and embedded trusted public key rather than floating main.
 TXT
 }
 
@@ -85,19 +86,25 @@ install_source_tree() {
 }
 
 install_package_file() {
-  local package=$1 expected=$2
+  local package=$1 expected=$2 trusted_key=${3:-}
   [[ $expected =~ ^[0-9a-fA-F]{64}$ ]] || { rm_error 'SHA-256 必须是 64 位十六进制'; return "$RM_RC_PRECONDITION"; }
   # shellcheck source=lib/update.sh
   source "$BASE_DIR/lib/update.sh"
-  update_install_manager_package "$package" "${expected,,}"
+  update_install_manager_package "$package" "${expected,,}" "$trusted_key"
 }
 
 cmd=${1:-}
 case "$cmd" in
   -h|--help) usage; exit 0 ;;
   --package)
-    [[ $# -eq 4 && $3 == --sha256 ]] || { usage; exit "$RM_RC_PRECONDITION"; }
-    install_package_file "$2" "$4"
+    [[ $# -eq 4 || $# -eq 6 ]] || { usage; exit "$RM_RC_PRECONDITION"; }
+    [[ $3 == --sha256 ]] || { usage; exit "$RM_RC_PRECONDITION"; }
+    if [[ $# -eq 6 ]]; then
+      [[ $5 == --trusted-key ]] || { usage; exit "$RM_RC_PRECONDITION"; }
+      install_package_file "$2" "$4" "$6"
+    else
+      install_package_file "$2" "$4"
+    fi
     ;;
   --install-source) install_source_tree ;;
   '')
