@@ -6,7 +6,7 @@
 |---|---|---|---|---|---|
 | ENV-01 | A/跨阶段 | 完成 | lib/system.sh; relay-manager.sh | test_system_readonly.sh; test_status_readonly.sh | 联网公网地址探测为独立函数，不在快速体检执行 |
 | ENV-02 | A/跨阶段 | 完成（单元证据） | lib/system.sh | test_system_readonly.sh | 四个承诺系统/双架构真实证据待系统集成 |
-| ENV-03 | A/跨阶段 | 部分完成 | lib/system.sh: system_ssh_json | test_system_readonly.sh | sshd -T -C、Match/不同用户与真实新连接验证需 Stage C 实机 |
+| ENV-03 | A/C | 部分完成 | lib/system.sh; lib/ssh.sh | test_system_readonly.sh; test_stage_c_ssh.sh; CI #88 | sshd -T -C、Include/Match/启动参数与目标用户检测已有隔离证据；真实发行版/连接条件待 T05/T07 |
 | ENV-04 | A/跨阶段 | 完成检测框架 | lib/system.sh | test_system_readonly.sh | 外部 Xray/3x-ui/Nginx 实机不接管归 Stage B/C T04 |
 | ENV-05 | A/跨阶段 | 部分完成 | lib/system.sh: system_probe_public_address | — | NAT 外部端口与手工输入的完整节点交互待 Stage B |
 | UX-01 | A/跨阶段 | 部分完成 | relay-manager.sh; install.sh | test_install.sh | 菜单路由已固定；各功能真正完成取决于 B/C/D |
@@ -28,28 +28,28 @@
 | TX-05 | A/跨阶段 | 完成框架 | lib/transaction.sh | test_transaction.sh | 真实 UFW 规则归属回滚待 C |
 | TX-06 | A/跨阶段 | 部分完成 | lib/transaction.sh; install.sh | test_transaction.sh | 包安装/删除/升级的业务语义待 D |
 | TX-07 | A/跨阶段 | 完成退出码基础 | lib/common.sh | test_non_tty.sh; test_transaction.sh | 后续全部命令需继续统一覆盖 |
-| SSH-01 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-02 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-03 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-04 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-05 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-06 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-07 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-08 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-09 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-10 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-11 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-12 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| SSH-13 | C | 未验收 | lib/ssh.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-01 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-02 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-03 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-04 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-05 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-06 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-07 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-08 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| FW-09 | C | 未验收 | lib/firewall.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
+| SSH-01 | C | 完成（隔离/逻辑） | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | 服务/socket、启动参数、Include/Match/cloud-init 与 sshd -T -C 路径已实现；T05/T07 的真实发行版/服务矩阵待最终 VPS |
+| SSH-02 | C | 完成（隔离/逻辑） | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | 有效 AuthorizedKeysFile、外部命令/CA/MFA 阻断已实现；多用户真实目录/权限待 VPS |
+| SSH-03 | C | 完成（隔离） | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | 仅公钥、ssh-keygen 校验、拒绝私钥、材料去重与原行保留已覆盖 |
+| SSH-04 | C | 部分完成 | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | fingerprint 删除与最后已验证入口保护已测；真实目标账户 ownership/权限待 VPS |
+| SSH-05 | C | 部分完成 | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | Root 仅公钥/禁用的前置逻辑与 sudo 证明已实现；T11 真实非 Root 新连接 + sudo 待 VPS |
+| SSH-06 | C | 部分完成 | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | Password/KbdInteractive/AuthenticationMethods/外部认证阻断已覆盖；PAM/Match 的真实发行版组合待 T05/T09 |
+| SSH-07 | C | 完成（流程/隔离） | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | 生成禁用连接复用/密码/键盘交互回退的新连接命令；实际成功仍必须人工/实机确认 |
+| SSH-08 | C | 完成（安全边界） | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | 不基于 SSH_CONNECTION 自动判定，无法可靠关联日志时只允许明确人工验证；T10 实机复用旧会话仍待验收 |
+| SSH-09 | C | 部分完成 | lib/ssh.sh; lib/firewall.sh | test_stage_c_ssh.sh; test_stage_c_firewall.sh; CI #88 | 双端口、UFW 先放行、语法/重启/待确认/回滚流程已覆盖；T06-T08 真实 SSH/云侧阻断待 VPS |
+| SSH-10 | C | 部分完成 | lib/ssh.sh | test_stage_c_ssh.sh; CI #88 | 关闭密码为独立受保护事务，要求已验证 key；新的纯密钥真实连接待 VPS |
+| SSH-11 | C | 部分完成 | lib/ssh.sh; templates/relay-manager-ssh-* | test_stage_c_ssh.sh; CI #88 | systemd 绝对截止 timer 与 boot guard 已实现；T12 断线/kill/超时真实故障注入待 VPS |
+| SSH-12 | C | 部分完成 | lib/ssh.sh; templates/relay-manager-ssh-* | test_stage_c_ssh.sh; CI #88 | 启动前 rollback guard 顺序已模板化；T07/T13 的 service/socket 实际重启顺序待 VPS |
+| SSH-13 | C | 完成（流程/边界） | lib/ssh.sh; README.md | test_stage_c_ssh.sh; CI #88 | recovery-guide 明确本机回滚与云安全组/NAT/供应商故障边界，不承诺绝对不锁死 |
+| FW-01 | C | 完成（检测/边界） | lib/firewall.sh | test_stage_c_firewall.sh; CI #88 | firewalld/nftables/容器链/UFW framework 漂移会阻止自动接管；复杂真实环境待最终对账 |
+| FW-02 | C | 完成（流程/隔离） | lib/firewall.sh | test_stage_c_firewall.sh; CI #88 | 启用前展示监听，SSH 自动保留，其他业务必须显式 --preserve-port；不 reset/不改默认策略/不自动全开 |
+| FW-03 | C | 完成（逻辑/隔离） | lib/firewall.sh; lib/state.sh | test_stage_c_firewall.sh; CI #88 | 规则按用途归属、规范化、语义删除与幂等已覆盖 |
+| FW-04 | C | 部分完成 | lib/firewall.sh | test_stage_c_firewall.sh; CI #88 | 现有公网 ALLOW/LIMIT、framework/IPv6 冲突检测已实现；T16-T18 实际规则顺序与双栈隔离待 VPS |
+| FW-05 | C | 部分完成 | lib/firewall.sh | test_stage_c_firewall.sh; CI #88 | 白名单生成 allow + 端口 deny，未做外部对照前保持 unverified；T17 默认允许/更早规则真实效果待 VPS |
+| FW-06 | C | 部分完成 | lib/firewall.sh | test_stage_c_firewall.sh; CI #88 | IPv6 监听时要求 UFW IPv6；不关闭系统 IPv6；真实双栈/ICMP(v6) 行为待 T18 |
+| FW-07 | C | 完成（语义/隔离） | lib/firewall.sh | test_stage_c_firewall.sh; CI #88 | UFW 未实施时明确 not_locally_enforced/unverified；空白名单在受管 UFW 下为节点端口拒绝 |
+| FW-08 | C | 完成（语义） | lib/firewall.sh | test_stage_c_firewall.sh | 明确规则变更主要影响新连接，不默认清理 conntrack；当前未实现破坏性的全局立即撤销 |
+| FW-09 | C | 部分完成 | lib/firewall.sh; templates/relay-manager-firewall-guard.service | test_stage_c_firewall.sh; test_stage_b_core_service.sh; CI #88 | 默认 10 分钟、精确撤销、自启动前过期回收已实现；T20 真重启/真实连接待 VPS |
 | UP-01 | B | 完成（隔离/配置级） | lib/node.sh; lib/export.sh | test_stage_b_node.sh; CI #59 | 首条线路机稳定 ID/独立 UUID 已覆盖；真实线路链路仍看 T25 |
 | UP-02 | B | 完成（隔离） | lib/node.sh | test_stage_b_node.sh; CI #59 | CRUD、启停、来源、轮换已覆盖；真实来源连通仍待 VPS |
 | UP-03 | B | 部分完成 | lib/node.sh; lib/export.sh | test_stage_b_node.sh; test_stage_b_export.sh | 删除/撤销状态与导出已测；T22 现有连接/新连接行为需真实网络验证 |
@@ -75,10 +75,10 @@
 | EXPORT-02 | B | 完成（隔离） | lib/export.sh; protocols/vless-reality.sh | test_stage_b_export.sh | 必要字段/IPv6 URI/转义已测，server privateKey 不导出 |
 | EXPORT-03 | B | 部分完成 | compat/compatibility.json; lib/export.sh | CI #59 real Xray config parse | 固定 profile 配置可被真实 Xray 解析；T24 实际客户端连接仍未验证 |
 | EXPORT-04 | B | 部分完成 | lib/export.sh | test_stage_b_export.sh | 3x-ui 字段映射与路由说明已生成；不声明一键兼容，T25 待真实面板 |
-| F2B-01 | C | 未验收 | lib/fail2ban.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| F2B-02 | C | 未验收 | lib/fail2ban.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| F2B-03 | C | 未验收 | lib/fail2ban.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| F2B-04 | C | 未验收 | lib/fail2ban.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
+| F2B-01 | C | 完成（逻辑/隔离） | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | 密码开放时推荐、纯 key 可选；已有管理员 sshd jail 冲突时拒绝覆盖 |
+| F2B-02 | C | 完成（逻辑/隔离） | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | file/systemd backend、python-systemd 依赖、UFW banaction、实际 SSH 端口与 systemd 无 logpath 已覆盖 |
+| F2B-03 | C | 部分完成 | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | 配置/服务/jail/日志源健康、ban 列表/单 IP unban/显式 ignore 已实现；T26 真实 Fail2ban 封禁/解封仍待隔离 VM/VPS |
+| F2B-04 | C | 完成（策略/隔离） | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | 自有 jail maxmatches/findtime/bantime 已固定记录；全局数据库/logrotate 只观察不改；disable 只停自有 jail |
 | DIAG-01 | B/D | 部分完成 | diagnostics.sh | test_stage_b_diagnostics.sh | D1-D4 分层与证据失效检测已实现；D4 必须由真实线路 VPS 记录 |
 | DIAG-02 | B/D | 完成（Stage B 范围） | diagnostics.sh | test_stage_b_diagnostics.sh | 脱敏包 0600、默认不联网、不上传、凭据不进入包；D 阶段再扩展发行/长期日志边界 |
 | UPDATE-01 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
@@ -98,7 +98,7 @@
 | PERF-01 | D/跨阶段 | 未验收 | 架构约束部分已体现在当前代码；正式证据待 D | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
 | PERF-02 | D/跨阶段 | 未验收 | 架构约束部分已体现在当前代码；正式证据待 D | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
 | PERF-03 | D/跨阶段 | 未验收 | 架构约束部分已体现在当前代码；正式证据待 D | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| TEST-01 | A/跨阶段 | 完成当前阶段自动化 | tests/run.sh; .github/workflows/ci.yml | CI #59: 18/0/0; bash -n; ShellCheck | 真实 systemd/网络仍属于 TEST-02 |
-| TEST-02 | A/跨阶段 | 未执行 | — | — | 真实 VM/VPS 阶段 |
-| TEST-03 | A/跨阶段 | 部分建立 | docs/TEST_REPORT.md; docs/STAGE_B_REAL_VPS_CHECKLIST.md | Stage A/B 自动化记录 + CI #59 | 真实 VPS 记录仍需逐项 case_id/镜像/版本/实际结果 |
+| TEST-01 | A/跨阶段 | 完成当前阶段自动化 | tests/run.sh; .github/workflows/ci.yml | CI #88: 21/0/0; bash -n; ShellCheck; pinned Xray parse | 真实 systemd/网络/SSH/UFW/Fail2ban 仍属于 TEST-02 |
+| TEST-02 | A/跨阶段 | 待最终统一实机验收 | docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md | — | 按用户计划在 A-D 开发完成后统一执行可恢复 VM/VPS 真实门槛 |
+| TEST-03 | A/跨阶段 | 部分建立 | docs/TEST_REPORT.md; docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md | Stage A/B/C 自动化 + CI #88 | 真实 VPS 记录仍需 case_id/镜像/版本/实际结果/脱敏证据 |
 | TEST-04 | A/跨阶段 | 未完成 | docs/TEST_REPORT.md | T01-T36 当前结论表 | 最终首版门槛需 B/C/D 后完整执行 |

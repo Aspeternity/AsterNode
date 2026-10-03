@@ -2,13 +2,13 @@
 
 Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。目标是不安装网页面板、不引入数据库或自有常驻守护进程，通过可审计状态、事务和模块边界管理 Xray 节点、安全组件、线路机凭据与维护操作。
 
-> 当前版本：`0.2.0-dev`，**阶段 B（节点）开发中**。阶段 A 基础门槛已通过；阶段 B 已具备自动化/配置级证据，但真实 systemd VPS、IPv4/IPv6 网络形态和 3x-ui 线路端 T24/T25 尚未完成，因此当前仍不是生产发布版。
+> 当前版本：`0.2.0-dev`。阶段 A 基础、阶段 B 节点自动化/配置级开发与阶段 C 安全模块的代码/隔离自动化已完成；Stage C 稳定功能基线为 `bd4d10d` / CI #88（21 passed / 0 failed / 0 skipped）。真实 VPS/systemd、IPv4/IPv6、SSH 故障注入、UFW 白名单隔离、Fail2ban 实际封禁，以及 3x-ui T24/T25 仍待最终统一实机验收，因此当前仍不是生产发布版。
 
 ## 当前进展
 
 阶段 A 已建立只读环境体检、root 专有状态、事务/回滚/恢复、非 TTY 修改保护、协议接口和隔离测试框架。
 
-阶段 B 当前已经加入：
+阶段 B 已经加入：
 
 - 固定兼容矩阵的 Xray 核心下载、SHA-256/大小校验和受管版本目录。
 - 专用 `rm-xray` 无登录用户、独立 `relay-manager-xray.service` 和维护 timer。
@@ -22,6 +22,15 @@ Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。�
 - 纯元数据/来源状态更新不再无意义重启 Xray，同时将受管配置摘要纳入事务观察，发现外部漂移立即停止。
 
 `dev/stage-b-node-continuation` 当前稳定基线的 CI 同时运行隔离单元/静态检查和固定 Xray v26.3.27 的服务端、客户端配置测试。CI #59 在提交 `0a5be45a` 上得到 `18 passed / 0 failed / 0 skipped`，ShellCheck 与真实 Xray 配置解析均通过。配置测试通过不等于线路 VPS 的真实认证和代理请求已经通过。
+
+阶段 C 已完成代码与隔离自动化收尾：
+
+- SSH：有效配置/Include/Match/cloud-init/启动参数检测、公钥新增与按 fingerprint 删除、最后已验证入口保护、密码与 Root 收紧前置验证、双端口迁移、systemd 回滚 timer/boot guard、控制台恢复说明。
+- UFW：复杂环境拒绝自动接管、显式保留 SSH 与业务入口、规则所有权/幂等/白名单冲突检测、IPv4/IPv6 边界、默认拒绝语义、临时公网开放与到期/启动恢复。
+- Fail2ban：安装建议、已有 sshd jail 冲突拒绝、file/systemd 日志后端、UFW banaction、实际 SSH 端口、日志源健康、封禁列表/单 IP 解封、受管 jail 增长边界与仅停用自有部分。
+- CI #88 在 `bd4d10d` 上得到 `21 passed / 0 failed / 0 skipped`，Bash syntax、ShellCheck 与固定 Xray 配置解析均通过。
+
+Stage C 的真实 SSH/UFW/Fail2ban 门槛按项目计划延后到 A-D 全部开发完成后的统一实机验收；详见 `docs/STAGE_C_REAL_VPS_CHECKLIST.md`。
 
 ## 只读使用
 
@@ -59,7 +68,7 @@ sudo ./install.sh --install-source
 
 测试通过 `RM_ROOT` 将受管绝对路径重定向到临时目录，避免对开发机的 `/etc`、`/run`、`/var/lib`、SSH、防火墙或 systemd 服务执行集成修改。CI 另用固定摘要下载 Xray v26.3.27 并对生成的服务端/客户端配置执行真实核心解析测试。
 
-仍必须在可恢复 VM / 专用 VPS 完成：真实 systemd 服务生命周期、IPv4/双栈/IPv6-only、NAT、外部 Xray 冲突、来源限制，以及至少一台真实 3x-ui 线路 VPS 的 REALITY 认证、代理请求和落地出口确认。
+仍必须在可恢复 VM / 专用 VPS 完成：真实 systemd 服务生命周期、IPv4/双栈/IPv6-only、NAT、外部 Xray 冲突、SSH 服务/socket 迁移与故障回滚、UFW 来源隔离和临时开放重启恢复、Fail2ban 实际封禁/解封，以及至少一台真实 3x-ui 线路 VPS 的 REALITY 认证、代理请求和落地出口确认。
 
 ## 目录
 
@@ -90,13 +99,13 @@ docs/                      需求矩阵、测试报告和审查交接
 - 节点没有启用线路机凭据时拒绝形成无认证/开放代理。
 - 默认诊断和列表不打印完整 UUID、REALITY 密钥或分享 URI。
 - Target 探测不会自动选择目标、修改节点或开放额外端口。
-- 阶段 B 的自动化通过不能替代真实线路 VPS T24/T25 证据。
+- 阶段 B 的自动化通过不能替代真实线路 VPS T24/T25 证据；阶段 C 的自动化通过也不能替代 T05-T20/T26 的真实 SSH、防火墙和 Fail2ban 证据。
 
 ## 开发顺序
 
 1. **A 基础**：检测、状态模型、模块接口、事务与恢复、安装入口。
-2. **B 节点**：Xray、VLESS + RAW/TCP + REALITY、线路机、导出、Target、基础诊断。**当前阶段**
-3. **C 安全**：UFW、SSH 公钥/迁移/保护、Fail2ban。
-4. **D 维护**：更新回退、备份恢复、卸载、发行包与完整兼容矩阵。
+2. **B 节点**：Xray、VLESS + RAW/TCP + REALITY、线路机、导出、Target、基础诊断。代码/自动化基线完成，真实网络 Gate 待最终验收。
+3. **C 安全**：UFW、SSH 公钥/迁移/保护、Fail2ban。代码/隔离自动化收尾完成，真实安全 Gate 待最终验收。
+4. **D 维护**：更新回退、备份恢复、卸载、发行包与完整兼容矩阵。**下一阶段**
 
 需求逐项状态与未验证边界见 `docs/IMPLEMENTATION_MATRIX.md` 和 `docs/TEST_REPORT.md`。

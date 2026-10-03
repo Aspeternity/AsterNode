@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased - Stage C security development
+
+- Added effective SSH policy inspection for service/socket mode, Include/Match/cloud-init and startup argument overrides.
+- Added public-key validation, fingerprint inventory/removal, last-verified-entry protection and manual fresh-connection verification commands.
+- Added protected SSH port/password/Root migrations with UFW coordination, systemd rollback timer, boot recovery guard and console recovery guidance.
+- Added conservative UFW ownership, explicit business-port preservation, whitelist conflict refusal, IPv4/IPv6 boundaries and timed public access recovery.
+- Added conservative Fail2ban sshd jail management with file/systemd log backends, dependency checks, runtime log-source health, UFW action selection, ban/unban tooling and managed growth limits.
+- CI #88 on `bd4d10d` passed 21 tests with zero failures/skips, Bash syntax, ShellCheck and pinned Xray v26.3.27 config parsing.
+- Stage C code/isolated automation is closed out; T05-T20/T26 remain pending final unified VM/VPS acceptance.
+
 ## 0.2.0-dev - 2026-10-02
 
 ### Stage B node development
