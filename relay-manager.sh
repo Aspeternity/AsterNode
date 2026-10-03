@@ -12,6 +12,7 @@ source "$BASE_DIR/lib/export.sh"
 source "$BASE_DIR/lib/update.sh"
 source "$BASE_DIR/lib/target.sh"
 source "$BASE_DIR/lib/remove.sh"
+source "$BASE_DIR/lib/maintenance.sh"
 
 mutation_guard() {
   [[ ${RM_TEST_MODE} == 1 ]] && return 0
@@ -231,6 +232,8 @@ update_cmd() { local sub=${1:-status}; shift || true; case "$sub" in core) mutat
 
 remove_cmd() { local sub=${1:-manager}; shift || true; case "$sub" in manager) mutation_guard; rm_confirm '确认删除受管节点与管理器？SSH/UFW/Fail2ban 安全设置默认保留。' || return "$RM_RC_CANCEL"; remove_all_nodes_and_manager false false;; backups) mutation_guard; remove_backups_only;; exports) mutation_guard; remove_exports_only;; *) return "$RM_RC_PRECONDITION";; esac; }
 
+maintenance_cmd() { local sub=${1:-status}; shift || true; case "$sub" in status) maintenance_status_json;; prune) mutation_guard; maintenance_prune_safe;; *) return "$RM_RC_PRECONDITION";; esac; }
+
 interactive_menu() {
   # ENV-01: entering the manager is read-only. Mutating menu actions invoke their own guard.
   while true; do
@@ -293,7 +296,8 @@ AsterNode CLI
   relay-manager backup list|verify ID|create [config|upgrade]|restore ID|restore-nodes ID
   relay-manager update status|verify-manager|core VERSION|rollback-core UPGRADE_BACKUP_ID|manager-package FILE SHA256 [PUBLIC_KEY]|rollback-manager
   relay-manager remove manager|backups|exports
-  relay-manager reconcile            systemd 维护任务：恢复未完成事务并撤销过期 UUID 轮换
+  relay-manager maintenance status|prune   查看 / 安全回收 AsterNode 自有磁盘资源
+  relay-manager reconcile            systemd 维护任务：恢复事务、撤销过期状态并执行安全资源回收
 
 修改命令要求 root + TTY；reconcile 仅供 root/systemd 非交互执行。
 退出码：0 成功，2 取消，10 输入/前置条件，20 应用失败已恢复，21 恢复不完整，30 网络/下载失败。
@@ -379,6 +383,9 @@ case "$cmd" in
   remove|uninstall)
     remove_cmd "$@"
     ;;
+  maintenance)
+    maintenance_cmd "$@"
+    ;;
   reconcile)
     rm_require_root || exit $?
     tx_recover_pending || {
@@ -387,6 +394,7 @@ case "$cmd" in
     }
     upstream_rotation_reconcile_expired
     fw_reconcile_expired
+    maintenance_prune_safe >/dev/null
     ;;
   help|-h|--help)
     help_cmd

@@ -5,6 +5,9 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/node.sh"
 
 RM_BACKUP_DIR="$RM_VAR_DIR/backups"
 RM_BACKUP_LIMIT_BYTES=${RM_BACKUP_LIMIT_BYTES:-209715200}
+RM_BACKUP_KEEP_CONFIG=${RM_BACKUP_KEEP_CONFIG:-10}
+RM_BACKUP_MIN_CONFIG=${RM_BACKUP_MIN_CONFIG:-2}
+RM_BACKUP_KEEP_UPGRADE=${RM_BACKUP_KEEP_UPGRADE:-1}
 
 RM_BACKUP_FORMAT=1
 
@@ -269,31 +272,48 @@ backup_restore_nodes_only() {
   }'
 }
 backup_prune() {
-  backup_init || return $?
-  local ids id keep_config=0 keep_upgrade=0 kind size total=0
+  [[ ! -e $RM_BACKUP_DIR && ! -L $RM_BACKUP_DIR ]] && return 0
+  [[ -d $RM_BACKUP_DIR && ! -L $RM_BACKUP_DIR ]] || return "$RM_RC_PRECONDITION"
+  [[ $RM_BACKUP_LIMIT_BYTES =~ ^[0-9]+$ && $RM_BACKUP_KEEP_CONFIG =~ ^[0-9]+$ &&
+     $RM_BACKUP_MIN_CONFIG =~ ^[0-9]+$ && $RM_BACKUP_KEEP_UPGRADE =~ ^[0-9]+$ ]] ||
+    return "$RM_RC_PRECONDITION"
+  ((RM_BACKUP_KEEP_CONFIG>=RM_BACKUP_MIN_CONFIG && RM_BACKUP_MIN_CONFIG>=1 && RM_BACKUP_KEEP_UPGRADE>=1)) ||
+    return "$RM_RC_PRECONDITION"
+
+  local ids id keep_config=0 keep_upgrade=0 kind size total=0 config_count oldest
   mapfile -t ids < <(find "$RM_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r)
   for id in "${ids[@]}"; do
-    if ! backup_id_valid "$id"; then
-      rm_warn "发现非受管备份目录，保留不动: $id"
+    if ! backup_id_valid "$id" || ! backup_verify "$id"; then
+      rm_warn "发现无效或非受管备份目录，保留不动: $id"
       continue
     fi
-    kind=$(jq -r '.kind//"config"' "$RM_BACKUP_DIR/$id/manifest.json" 2>/dev/null || printf config)
+    kind=$(jq -r '.kind' "$RM_BACKUP_DIR/$id/manifest.json")
     if [[ $kind == upgrade ]]; then
       ((keep_upgrade+=1))
-      ((keep_upgrade<=1)) && continue
+      ((keep_upgrade<=RM_BACKUP_KEEP_UPGRADE)) && continue
     else
       ((keep_config+=1))
-      ((keep_config<=10)) && continue
+      ((keep_config<=RM_BACKUP_KEEP_CONFIG)) && continue
     fi
     rm -rf -- "$RM_BACKUP_DIR/$id"
   done
+
   size=$(du -sb "$RM_BACKUP_DIR" 2>/dev/null | awk '{print $1}')
   total=${size:-0}
-  if (( total > RM_BACKUP_LIMIT_BYTES )); then
-    rm_warn "备份总量超过上限 ${RM_BACKUP_LIMIT_BYTES} 字节；为避免删除最近可用恢复点，未自动继续清理。"
+  while ((total>RM_BACKUP_LIMIT_BYTES)); do
+    config_count=$(backup_list | jq '[.[] | select(.valid==true and .kind=="config")] | length')
+    ((config_count>RM_BACKUP_MIN_CONFIG)) || break
+    oldest=$(backup_list | jq -r '[.[] | select(.valid==true and .kind=="config")] | reverse | .[0].backup_id // empty')
+    [[ -n $oldest ]] || break
+    rm -rf -- "$RM_BACKUP_DIR/$oldest"
+    size=$(du -sb "$RM_BACKUP_DIR" 2>/dev/null | awk '{print $1}')
+    total=${size:-0}
+  done
+
+  if ((total>RM_BACKUP_LIMIT_BYTES)); then
+    rm_warn "备份总量仍超过上限 ${RM_BACKUP_LIMIT_BYTES} 字节；最近 ${RM_BACKUP_MIN_CONFIG} 个配置恢复点和升级恢复点受保护，不继续自动删除。"
   fi
 }
-
 backup_list() {
   if [[ ! -e $RM_BACKUP_DIR ]]; then
     printf '[]\n'
