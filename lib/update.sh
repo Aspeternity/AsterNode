@@ -31,7 +31,10 @@ update_install_trusted_key() {
   rm_require_root || return $?
   update_validate_public_key "$key" || return $?
   new_sha=$(rm_sha256_file "$key")
-  if [[ -e $RM_TRUSTED_RELEASE_KEY ]]; then
+  dir=$(dirname "$RM_TRUSTED_RELEASE_KEY")
+  rm_mkdir_secure 0700 "$dir" || return $?
+
+  if [[ -e $RM_TRUSTED_RELEASE_KEY || -L $RM_TRUSTED_RELEASE_KEY ]]; then
     [[ -f $RM_TRUSTED_RELEASE_KEY && ! -L $RM_TRUSTED_RELEASE_KEY ]] || {
       rm_error '受信发行公钥路径不是普通文件'
       return "$RM_RC_PRECONDITION"
@@ -41,13 +44,12 @@ update_install_trusted_key() {
       rm_error '已存在不同的受信发行公钥；密钥轮换必须走单独的受控流程'
       return "$RM_RC_PRECONDITION"
     fi
+    chmod 0644 "$RM_TRUSTED_RELEASE_KEY"
+    [[ ${RM_TEST_MODE} == 1 ]] || chown root:root "$RM_TRUSTED_RELEASE_KEY"
     return 0
   fi
-  dir=$(dirname "$RM_TRUSTED_RELEASE_KEY")
-  rm_assert_no_symlink_components "$(dirname "$dir")" || return $?
-  install -d -m 0755 "$dir"
-  install -m 0644 "$key" "$RM_TRUSTED_RELEASE_KEY"
-  [[ ${RM_TEST_MODE} == 1 ]] || chown root:root "$RM_TRUSTED_RELEASE_KEY"
+
+  rm_atomic_write "$key" "$RM_TRUSTED_RELEASE_KEY" 0644 root:root
 }
 
 update_safe_tar_list() {
@@ -258,29 +260,88 @@ update_current_managed_version_path() {
 }
 
 update_validate_bin_link() {
-  local expected_current=${1:-} resolved expected_bin
+  local expected_current=${1:-} resolved expected_bin literal expected_literal
   if [[ ! -e $RM_BIN_LINK && ! -L $RM_BIN_LINK ]]; then return 0; fi
   [[ -L $RM_BIN_LINK ]] || {
     rm_error 'relay-manager 命令路径已存在且不属于受管符号链接，拒绝覆盖'
     return "$RM_RC_PRECONDITION"
   }
-  resolved=$(readlink -f "$RM_BIN_LINK" 2>/dev/null || true)
   [[ -n $expected_current ]] || {
     rm_error '发现已有 relay-manager 命令，但没有受管 current 版本，拒绝覆盖'
     return "$RM_RC_PRECONDITION"
   }
+  literal=$(readlink "$RM_BIN_LINK" 2>/dev/null || true)
+  expected_literal="$RM_MANAGER_CURRENT/relay-manager.sh"
+  resolved=$(readlink -f "$RM_BIN_LINK" 2>/dev/null || true)
   expected_bin="$expected_current/relay-manager.sh"
-  [[ -n $resolved && $resolved == "$expected_bin" ]] || {
+  [[ $literal == "$expected_literal" && -n $resolved && $resolved == "$expected_bin" ]] || {
     rm_error 'relay-manager 命令链接与当前受管版本不一致，拒绝覆盖'
     return "$RM_RC_PRECONDITION"
   }
 }
 
+update_run_release_smoke() {
+  local dir=$1 out rc=0
+  [[ -x $dir/tests/release_smoke.sh ]] || {
+    rm_error '发行包缺少可执行 release smoke'
+    return "$RM_RC_PRECONDITION"
+  }
+  set +e
+  out=$("$dir/tests/release_smoke.sh" 2>&1)
+  rc=$?
+  set -e
+  if ((rc)); then
+    rm_error "发行自检失败: ${out:0:1200}"
+    return "$RM_RC_PRECONDITION"
+  fi
+}
+
+update_restore_manager_links() {
+  local previous=${1:-} remove_bin=${2:-false}
+  if [[ -n $previous && -d $previous && ! -L $previous ]]; then
+    ln -sfn "$previous" "$RM_MANAGER_CURRENT.tmp" || return "$RM_RC_RECOVERY_INCOMPLETE"
+    mv -Tf "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT" || return "$RM_RC_RECOVERY_INCOMPLETE"
+  else
+    rm -f "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT"
+  fi
+  if [[ $remove_bin == true ]]; then
+    rm -f "$RM_BIN_LINK.tmp" "$RM_BIN_LINK"
+  fi
+}
+
+update_switch_manager_links() {
+  local dest=$1 previous=${2:-} bin_preexisting=${3:-false}
+  [[ -d $dest && ! -L $dest && -x $dest/relay-manager.sh ]] || return "$RM_RC_PRECONDITION"
+
+  ln -sfn "$dest" "$RM_MANAGER_CURRENT.tmp" || return "$RM_RC_INTERNAL"
+  if ! mv -Tf "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT"; then
+    rm -f "$RM_MANAGER_CURRENT.tmp"
+    return "$RM_RC_INTERNAL"
+  fi
+
+  if [[ $bin_preexisting == false ]]; then
+    if ! ln -s "$RM_MANAGER_CURRENT/relay-manager.sh" "$RM_BIN_LINK.tmp" ||
+       ! mv -Tf "$RM_BIN_LINK.tmp" "$RM_BIN_LINK"; then
+      rm -f "$RM_BIN_LINK.tmp"
+      update_restore_manager_links "$previous" true || true
+      return "$RM_RC_APPLY_ROLLED_BACK"
+    fi
+  fi
+
+  if [[ $(readlink -f "$RM_MANAGER_CURRENT" 2>/dev/null || true) != "$dest" ||
+        $(readlink -f "$RM_BIN_LINK" 2>/dev/null || true) != "$dest/relay-manager.sh" ]]; then
+    update_restore_manager_links "$previous" "$([[ $bin_preexisting == false ]] && printf true || printf false)" || true
+    rm_error '管理器版本切换后链接校验失败'
+    return "$RM_RC_APPLY_ROLLED_BACK"
+  fi
+}
+
 update_install_manager_package() {
   local package=$1 expected_sha=${2:-} explicit_key=${3:-} verify_key top tmpdir extract root manifest version dest previous copied=false
-  local required package_size root_size current_after state_rc=0
+  local required package_size root_size current_after state_rc=0 bin_preexisting=false
   rm_require_root || return $?
   [[ -f $package && ! -L $package ]] || return "$RM_RC_PRECONDITION"
+
   if [[ -n $expected_sha ]]; then
     [[ $expected_sha =~ ^[0-9a-fA-F]{64}$ ]] || return "$RM_RC_PRECONDITION"
     if [[ $(rm_sha256_file "$package") != "${expected_sha,,}" ]]; then
@@ -288,40 +349,54 @@ update_install_manager_package() {
       return "$RM_RC_PRECONDITION"
     fi
   fi
+
   verify_key=${explicit_key:-$RM_TRUSTED_RELEASE_KEY}
+  if [[ -n $explicit_key ]]; then
+    update_validate_public_key "$explicit_key" || return $?
+    if [[ -e $RM_TRUSTED_RELEASE_KEY || -L $RM_TRUSTED_RELEASE_KEY ]]; then
+      [[ -f $RM_TRUSTED_RELEASE_KEY && ! -L $RM_TRUSTED_RELEASE_KEY ]] || return "$RM_RC_PRECONDITION"
+      [[ $(rm_sha256_file "$RM_TRUSTED_RELEASE_KEY") == $(rm_sha256_file "$explicit_key") ]] || {
+        rm_error '显式发行公钥与已固定受信公钥不一致'
+        return "$RM_RC_PRECONDITION"
+      }
+    fi
+  else
+    update_validate_public_key "$RM_TRUSTED_RELEASE_KEY" || {
+      rm_error '未配置有效的受信发行公钥，拒绝安装'
+      return "$RM_RC_PRECONDITION"
+    }
+  fi
+
   top=$(update_safe_tar_list "$package") || return $?
   tmpdir=$(rm_safe_tmpdir); extract="$tmpdir/extract"; mkdir "$extract"
   tar -xzf "$package" -C "$extract" || { rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
   root="$extract/$top"
   update_verify_release_dir "$root" "$verify_key" || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
-  manifest="$root/MANIFEST.json"; version=$(jq -r .version "$manifest"); dest="$RM_VERSION_BASE/$version"
+  manifest="$root/MANIFEST.json"
+  version=$(jq -r .version "$manifest")
+  dest="$RM_VERSION_BASE/$version"
 
   if tx_has_conflict; then
     rm_error '有未完成安全事务，禁止更新管理器'
     rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"
   fi
 
-  package_size=$(stat -c '%s' "$package"); root_size=$(du -sb "$root" | awk '{print $1}')
+  package_size=$(stat -c '%s' "$package")
+  root_size=$(du -sb "$root" | awk '{print $1}')
   required=$((package_size + root_size * 2 + 1048576))
   update_require_space "$RM_VERSION_BASE" "$required" || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
-
-  if [[ -n $explicit_key ]]; then
-    update_install_trusted_key "$explicit_key" || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
-  elif [[ ! -f $RM_TRUSTED_RELEASE_KEY ]]; then
-    rm_error '未配置受信发行公钥，拒绝安装'
-    rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"
-  fi
 
   install -d -m 0755 "$RM_VERSION_BASE" "$(dirname "$RM_BIN_LINK")"
   previous=$(update_current_managed_version_path) || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   update_validate_bin_link "$previous" || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  [[ -e $RM_BIN_LINK || -L $RM_BIN_LINK ]] && bin_preexisting=true
 
   if [[ -e $dest ]]; then
     if [[ ! -d $dest || -L $dest ]]; then
       rm_error "版本目标已存在且类型异常: $dest"
       rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"
     fi
-    update_verify_release_dir "$dest" "$RM_TRUSTED_RELEASE_KEY" || {
+    update_verify_release_dir "$dest" "$verify_key" || {
       rm_error '同版本目录已存在但不是可验证的相同发行内容'
       rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"
     }
@@ -335,32 +410,60 @@ update_install_manager_package() {
     [[ ${RM_TEST_MODE} == 1 ]] || chown -R root:root "$dest"
   fi
 
-  if [[ ! -x $dest/tests/release_smoke.sh ]] || ! "$dest/tests/release_smoke.sh"; then
-    rm_error '新管理器版本发行自检失败，未切换'
+  if ! update_run_release_smoke "$dest"; then
     [[ $copied == true ]] && rm -rf "$dest"
-    rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"
+    rm -rf "$tmpdir"
+    return "$RM_RC_PRECONDITION"
   fi
 
-  ln -sfn "$dest" "$RM_MANAGER_CURRENT.tmp"
-  mv -Tf "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT"
-  ln -sfn "$RM_MANAGER_CURRENT/relay-manager.sh" "$RM_BIN_LINK.tmp"
-  mv -Tf "$RM_BIN_LINK.tmp" "$RM_BIN_LINK"
+  if [[ -n $explicit_key ]]; then
+    if ! update_install_trusted_key "$explicit_key"; then
+      local rc=$?
+      [[ $copied == true ]] && rm -rf "$dest"
+      rm -rf "$tmpdir"
+      return "$rc"
+    fi
+  fi
 
-  if ! state_init >/dev/null || ! state_update_filter '.manager_version=$v | .previous_manager_path=$prev' --arg v "$version" --arg prev "$previous"; then
-    state_rc=$?
+  # Reinstalling the exact current version is a no-op for the rollback pointer.
+  if [[ -n $previous && $previous == "$dest" ]]; then
+    state_init >/dev/null || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+    state_update_filter '.manager_version=$v' --arg v "$version" || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+    rm -rf "$tmpdir"
+    jq -n --arg version "$version" --arg path "$dest"       '{status:"already_installed",version:$version,current_path:$path,previous_path_preserved:true}'
+    return 0
+  fi
+
+  if ! update_switch_manager_links "$dest" "$previous" "$bin_preexisting"; then
+    local rc=$?
+    [[ $copied == true ]] && rm -rf "$dest"
+    rm -rf "$tmpdir"
+    return "$rc"
+  fi
+
+  state_rc=0
+  state_init >/dev/null || state_rc=$?
+  if ((state_rc==0)); then
+    state_update_filter '.manager_version=$v | .previous_manager_path=$prev' --arg v "$version" --arg prev "$previous" || state_rc=$?
+  fi
+  if ((state_rc!=0)); then
     rm_error '管理器状态更新失败，恢复上一版本链接'
-    if [[ -n $previous && -d $previous ]]; then
-      ln -sfn "$previous" "$RM_MANAGER_CURRENT.tmp"; mv -Tf "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT"
-      ln -sfn "$RM_MANAGER_CURRENT/relay-manager.sh" "$RM_BIN_LINK.tmp"; mv -Tf "$RM_BIN_LINK.tmp" "$RM_BIN_LINK"
-    else
-      rm -f "$RM_MANAGER_CURRENT" "$RM_BIN_LINK"
+    if ! update_restore_manager_links "$previous" "$([[ $bin_preexisting == false ]] && printf true || printf false)"; then
+      [[ $copied == true ]] && rm -rf "$dest"
+      rm -rf "$tmpdir"
+      return "$RM_RC_RECOVERY_INCOMPLETE"
     fi
     [[ $copied == true ]] && rm -rf "$dest"
     rm -rf "$tmpdir"
-    return "${state_rc:-$RM_RC_APPLY_ROLLED_BACK}"
+    return "$RM_RC_APPLY_ROLLED_BACK"
   fi
 
-  current_after=$(readlink -f "$RM_MANAGER_CURRENT")
+  current_after=$(readlink -f "$RM_MANAGER_CURRENT" 2>/dev/null || true)
+  [[ $current_after == "$dest" ]] || {
+    rm_error '状态提交后 current 链接异常'
+    rm -rf "$tmpdir"
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  }
   rm -rf "$tmpdir"
   jq -n --arg version "$version" --arg path "$current_after" --arg prev "$previous"     '{status:"installed",version:$version,current_path:$path,previous_path:(if $prev=="" then null else $prev end)}'
 }
@@ -369,7 +472,7 @@ update_manager_rollback() {
   rm_require_root || return $?
   state_init >/dev/null || return $?
   tx_has_conflict && { rm_error '有未完成安全事务，禁止回退'; return "$RM_RC_PRECONDITION"; }
-  local prev current prev_real
+  local prev current prev_real state_rc=0
   prev=$(jq -r '.previous_manager_path//empty' "$RM_STATE_FILE")
   [[ -n $prev && -d $prev && ! -L $prev && -x $prev/relay-manager.sh ]] || {
     rm_error '没有可恢复的上一管理器版本'
@@ -384,24 +487,21 @@ update_manager_rollback() {
     rm_error '上一管理器版本发行完整性校验失败'
     return "$RM_RC_PRECONDITION"
   }
-  [[ -x $prev_real/tests/release_smoke.sh ]] && "$prev_real/tests/release_smoke.sh" || {
-    rm_error '上一管理器版本自检失败'
-    return "$RM_RC_PRECONDITION"
-  }
+  update_run_release_smoke "$prev_real" || return $?
+
   current=$(update_current_managed_version_path) || return $?
   update_validate_bin_link "$current" || return $?
+  [[ -n $current ]] || { rm_error '当前没有可回退的受管管理器版本'; return "$RM_RC_PRECONDITION"; }
 
-  ln -sfn "$prev_real" "$RM_MANAGER_CURRENT.tmp"; mv -Tf "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT"
-  ln -sfn "$RM_MANAGER_CURRENT/relay-manager.sh" "$RM_BIN_LINK.tmp"; mv -Tf "$RM_BIN_LINK.tmp" "$RM_BIN_LINK"
-  if ! state_update_filter '.previous_manager_path=$current | .manager_version=$v' --arg current "$current" --arg v "$(basename "$prev_real")"; then
+  update_switch_manager_links "$prev_real" "$current" true || return $?
+
+  state_update_filter '.previous_manager_path=$current | .manager_version=$v' --arg current "$current" --arg v "$(basename "$prev_real")" || state_rc=$?
+  if ((state_rc!=0)); then
     rm_error '回退状态更新失败，恢复原管理器链接'
-    if [[ -n $current && -d $current ]]; then
-      ln -sfn "$current" "$RM_MANAGER_CURRENT.tmp"; mv -Tf "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT"
-      ln -sfn "$RM_MANAGER_CURRENT/relay-manager.sh" "$RM_BIN_LINK.tmp"; mv -Tf "$RM_BIN_LINK.tmp" "$RM_BIN_LINK"
-    fi
+    update_restore_manager_links "$current" false || return "$RM_RC_RECOVERY_INCOMPLETE"
     return "$RM_RC_APPLY_ROLLED_BACK"
   fi
-  jq -n --arg path "$prev_real" '{status:"rolled_back",current_path:$path}'
+  jq -n --arg path "$prev_real" --arg previous "$current"     '{status:"rolled_back",current_path:$path,previous_path:$previous}'
 }
 
 update_core_to() {

@@ -13,7 +13,7 @@ Usage:
   tools/release/build-package.sh --version VERSION --commit GIT_SHA --signing-key PRIVATE_KEY --out DIR
 
 Environment:
-  SOURCE_DATE_EPOCH  Optional. Set for repeatable timestamps/tar metadata.
+  SOURCE_DATE_EPOCH  Optional. Defaults to the selected commit timestamp.
 TXT
 }
 
@@ -31,27 +31,37 @@ done
 
 [[ $version =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]] || { printf 'Invalid version\n' >&2; exit 10; }
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || { printf 'Commit must be a 40-char lowercase Git SHA\n' >&2; exit 10; }
-[[ -n $out && -d $out ]] || { printf 'Output directory must already exist\n' >&2; exit 10; }
+[[ -n $out && -d $out && ! -L $out ]] || { printf 'Output directory must be a real directory\n' >&2; exit 10; }
 [[ -f $signing_key && ! -L $signing_key ]] || { printf 'Signing key must be a regular file\n' >&2; exit 10; }
-command -v jq >/dev/null && command -v openssl >/dev/null && command -v sha256sum >/dev/null && command -v tar >/dev/null || {
-  printf 'Missing jq/openssl/sha256sum/tar\n' >&2; exit 10;
-}
+for cmd in git jq openssl sha256sum tar; do command -v "$cmd" >/dev/null || { printf 'Missing command: %s\n' "$cmd" >&2; exit 10; }; done
 openssl pkey -in "$signing_key" -noout >/dev/null 2>&1 || { printf 'Invalid private signing key\n' >&2; exit 10; }
-[[ $(cat "$PROJECT_DIR/VERSION") == "$version" ]] || { printf 'VERSION file does not match --version\n' >&2; exit 10; }
 
-epoch=${SOURCE_DATE_EPOCH:-$(date +%s)}
+head=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || true)
+[[ $head == "$commit" ]] || { printf 'Requested commit is not the checked-out HEAD\n' >&2; exit 10; }
+git -C "$PROJECT_DIR" diff --quiet --ignore-submodules -- || { printf 'Tracked working tree is dirty; refusing release build\n' >&2; exit 10; }
+git -C "$PROJECT_DIR" diff --cached --quiet --ignore-submodules -- || { printf 'Index differs from HEAD; refusing release build\n' >&2; exit 10; }
+
+project_real=$(readlink -f "$PROJECT_DIR")
+key_real=$(readlink -f "$signing_key")
+[[ $key_real != "$project_real"/* ]] || { printf 'Signing key must not live inside the source tree\n' >&2; exit 10; }
+
+commit_version=$(git -C "$PROJECT_DIR" show "$commit:VERSION" 2>/dev/null || true)
+[[ $commit_version == "$version" ]] || { printf 'VERSION at selected commit does not match --version\n' >&2; exit 10; }
+
+epoch=${SOURCE_DATE_EPOCH:-$(git -C "$PROJECT_DIR" show -s --format=%ct "$commit")}
 [[ $epoch =~ ^[0-9]+$ ]] || { printf 'SOURCE_DATE_EPOCH must be an integer\n' >&2; exit 10; }
 built_at=$(date -u -d "@$epoch" +'%Y-%m-%dT%H:%M:%SZ')
 root_name="relay-manager-$version"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-stage="$tmp/stage"; root="$stage/$root_name"
+stage="$tmp/stage"
+root="$stage/$root_name"
 mkdir -p "$root"
 
-copy_items=(VERSION README.md CHANGELOG.md install.sh relay-manager.sh diagnostics.sh lib protocols compat templates tests docs tools)
-for item in "${copy_items[@]}"; do
-  [[ -e "$PROJECT_DIR/$item" ]] || { printf 'Required release path missing: %s\n' "$item" >&2; exit 10; }
-  cp -a "$PROJECT_DIR/$item" "$root/"
+release_items=(VERSION README.md CHANGELOG.md install.sh relay-manager.sh diagnostics.sh lib protocols compat templates tests docs tools)
+git -C "$PROJECT_DIR" archive --format=tar "$commit" -- "${release_items[@]}" | tar -xf - -C "$root"
+for item in "${release_items[@]}"; do
+  [[ -e "$root/$item" ]] || { printf 'Required release path missing from commit: %s\n' "$item" >&2; exit 10; }
 done
 
 if find "$root" -type l -print -quit | grep -q .; then
@@ -72,12 +82,14 @@ while IFS= read -r -d '' file; do
 done < <(find "$root" -type f -print0 | sort -z)
 
 files=$(jq -s 'sort_by(.path)' "$entries")
-default_core=$(jq -r .default_core_version "$PROJECT_DIR/compat/compatibility.json")
-architectures=$(jq -c --arg v "$default_core" '.core.xray[$v].assets|keys|sort' "$PROJECT_DIR/compat/compatibility.json")
-profiles=$(jq -c '.client_profiles|keys|sort' "$PROJECT_DIR/compat/compatibility.json")
+default_core=$(jq -r .default_core_version "$root/compat/compatibility.json")
+architectures=$(jq -c --arg v "$default_core" '.core.xray[$v].assets|keys|sort' "$root/compat/compatibility.json")
+profiles=$(jq -c '.client_profiles|keys|sort' "$root/compat/compatibility.json")
+state_schema=$(awk -F'"' '/^RM_SCHEMA_VERSION=/{print $2; exit}' "$root/lib/common.sh")
+[[ $state_schema =~ ^[0-9]+$ ]] || { printf 'Could not derive state schema from release source\n' >&2; exit 10; }
 if [[ $version == *-* ]]; then prerelease=true; else prerelease=false; fi
 
-jq -n   --arg version "$version"   --arg commit "$commit"   --arg built "$built_at"   --arg core "$default_core"   --argjson prerelease "$prerelease"   --argjson arch "$architectures"   --argjson profiles "$profiles"   --argjson files "$files"   '{
+jq -n   --arg version "$version"   --arg commit "$commit"   --arg built "$built_at"   --arg core "$default_core"   --argjson schema "$state_schema"   --argjson prerelease "$prerelease"   --argjson arch "$architectures"   --argjson profiles "$profiles"   --argjson files "$files"   '{
     release_format:1,
     project:"relay-manager",
     product:"AsterNode",
@@ -85,7 +97,7 @@ jq -n   --arg version "$version"   --arg commit "$commit"   --arg built "$built_
     commit_sha:$commit,
     prerelease:$prerelease,
     built_at:$built,
-    state_schema:1,
+    state_schema:$schema,
     compatibility_document:"docs/COMPATIBILITY.md",
     supported:{
       systems:["Debian 12","Debian 13","Ubuntu 22.04","Ubuntu 24.04"],
@@ -115,7 +127,7 @@ package="$out/$root_name.tar.gz"
 tmp_package="$package.tmp"
 tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner -C "$stage" -czf "$tmp_package" "$root_name"
 mv -f "$tmp_package" "$package"
-sha256sum "$package" | awk '{print $1"  "$2}' >"$package.sha256"
+sha256sum "$package" >"$package.sha256"
 openssl pkey -in "$signing_key" -pubout -out "$out/RELEASE.pub.pem" >/dev/null 2>&1
 chmod 0644 "$out/RELEASE.pub.pem"
 sha256sum "$out/RELEASE.pub.pem" >"$out/RELEASE.pub.pem.sha256"

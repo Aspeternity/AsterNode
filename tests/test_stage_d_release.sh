@@ -13,7 +13,8 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$priv" >/dev/
 openssl pkey -in "$priv" -pubout -out "$pub" >/dev/null 2>&1
 
 version=$(cat "$PROJECT_DIR/VERSION")
-commit=1111111111111111111111111111111111111111
+commit=$(git -C "$PROJECT_DIR" rev-parse HEAD)
+[[ $commit =~ ^[0-9a-f]{40}$ ]] || fail 'could not resolve release commit'
 mkdir -p "$work/out"
 SOURCE_DATE_EPOCH=1700000000 "$PROJECT_DIR/tools/release/build-package.sh"   --version "$version" --commit "$commit" --signing-key "$priv" --out "$work/out" >"$work/build.json"
 
@@ -38,6 +39,9 @@ assert_eq "$root/usr/local/lib/relay-manager/versions/$version/relay-manager.sh"
 assert_file_mode "$root/etc/relay-manager/trusted-release.pem" 644
 assert_file_mode "$root/usr/local/lib/relay-manager/versions/$version/MANIFEST.json" 644
 
+smoke_stdout=$(update_run_release_smoke "$root/usr/local/lib/relay-manager/versions/$version")
+assert_eq '' "$smoke_stdout" 'release smoke polluted machine-readable stdout'
+
 # Managed-link inspection must distinguish a genuinely absent first-install path from readlink -f canonicalization.
 rm -f "$root/usr/local/bin/relay-manager" "$root/usr/local/lib/relay-manager/current"
 assert_eq '' "$(update_current_managed_version_path)" 'absent current path was misdetected as an unmanaged installation'
@@ -46,6 +50,16 @@ ln -s "$root/usr/local/lib/relay-manager/versions/$version" "$root/usr/local/lib
 ln -s "$root/usr/local/lib/relay-manager/current/relay-manager.sh" "$root/usr/local/bin/relay-manager"
 assert_eq "$root/usr/local/lib/relay-manager/versions/$version" "$(update_current_managed_version_path)" 'managed current link was not resolved'
 update_validate_bin_link "$root/usr/local/lib/relay-manager/versions/$version"
+
+# A foreign current symlink must never be treated as managed.
+mkdir -p "$work/foreign-manager"
+rm -f "$root/usr/local/lib/relay-manager/current"
+ln -s "$work/foreign-manager" "$root/usr/local/lib/relay-manager/current"
+rc=0
+update_install_manager_package "$package" "$sha" "$built_pub" >/dev/null 2>&1 || rc=$?
+assert_eq 10 "$rc" 'foreign current link was accepted as managed'
+rm -f "$root/usr/local/lib/relay-manager/current"
+ln -s "$root/usr/local/lib/relay-manager/versions/$version" "$root/usr/local/lib/relay-manager/current"
 
 # A foreign command path must never be overwritten.
 rm -f "$root/usr/local/bin/relay-manager"
@@ -57,8 +71,12 @@ assert_eq 10 "$rc" 'foreign relay-manager command path was overwritten'
 rm -f "$root/usr/local/bin/relay-manager"
 ln -s "$root/usr/local/lib/relay-manager/current/relay-manager.sh" "$root/usr/local/bin/relay-manager"
 
-# Same verified release is idempotent and does not create a duplicate version.
-update_install_manager_package "$package" "$sha" "$built_pub" >/dev/null
+# Same verified release is idempotent and must not destroy a real rollback pointer.
+sentinel="$root/usr/local/lib/relay-manager/versions/previous-sentinel"
+state_update_filter '.previous_manager_path=$p' --arg p "$sentinel"
+again=$(update_install_manager_package "$package" "$sha" "$built_pub")
+assert_json "$again" '.status=="already_installed" and .previous_path_preserved==true'
+assert_eq "$sentinel" "$(jq -r '.previous_manager_path' "$RM_STATE_FILE")" 'idempotent install rewrote the rollback pointer'
 assert_eq 1 "$(find "$root/usr/local/lib/relay-manager/versions" -mindepth 1 -maxdepth 1 -type d | wc -l)" 'idempotent install created another version'
 
 # Outer digest mismatch must fail before extraction/install.
@@ -70,7 +88,7 @@ assert_eq 10 "$rc" 'wrong outer digest was accepted'
 priv2="$work/release2.key"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$priv2" >/dev/null 2>&1
 mkdir "$work/out2"
-SOURCE_DATE_EPOCH=1700000000 "$PROJECT_DIR/tools/release/build-package.sh"   --version "$version" --commit 2222222222222222222222222222222222222222 --signing-key "$priv2" --out "$work/out2" >"$work/build2.json"
+SOURCE_DATE_EPOCH=1700000000 "$PROJECT_DIR/tools/release/build-package.sh"   --version "$version" --commit "$commit" --signing-key "$priv2" --out "$work/out2" >"$work/build2.json"
 package2=$(jq -r .package "$work/build2.json")
 sha2=$(jq -r .sha256 "$work/build2.json")
 rc=0

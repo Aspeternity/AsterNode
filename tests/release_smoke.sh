@@ -12,4 +12,4 @@ if [[ -f $BASE_DIR/MANIFEST.json ]]; then
 fi
 while IFS= read -r file; do bash -n "$file"; done < <(find "$BASE_DIR" -maxdepth 4 -type f -name '*.sh' -print | sort)
 "$BASE_DIR/relay-manager.sh" help >/dev/null
-printf 'release smoke: PASS\n'
+printf 'release smoke: PASS\n' >&2
