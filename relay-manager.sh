@@ -210,7 +210,16 @@ firewall_cmd() {
 
 fail2ban_cmd() {
   local sub=${1:-status}; shift || true
-  case "$sub" in status) f2b_status_json;; install) mutation_guard; f2b_install_packages false;; apply) mutation_guard; f2b_apply_ssh_jail;; banned) f2b_banned_json;; unban) mutation_guard; f2b_unban "$1";; *) return "$RM_RC_PRECONDITION";; esac
+  case "$sub" in
+    status) f2b_status_json;;
+    recommend) f2b_recommendation_json "${1:-root}";;
+    install) mutation_guard; f2b_install_packages false;;
+    apply) mutation_guard; f2b_apply_ssh_jail "$@";;
+    disable) mutation_guard; f2b_disable_managed;;
+    banned) f2b_banned_json;;
+    unban) mutation_guard; f2b_unban "$1";;
+    *) return "$RM_RC_PRECONDITION";;
+  esac
 }
 
 backup_cmd() { local sub=${1:-list}; shift || true; case "$sub" in list) backup_list;; create) mutation_guard; backup_create "${1:-config}";; restore) mutation_guard; backup_restore_local "$1";; restore-nodes) mutation_guard; backup_restore_nodes_only "$1";; *) return "$RM_RC_PRECONDITION";; esac; }
@@ -277,7 +286,7 @@ AsterNode CLI
                     add-key USER FILE|migrate-port PORT|remove-old-port PORT
                     mark-key-verified USER [FINGERPRINT]|disable-password USER|verify-sudo USER
                     root-publickey-only|root-disable ADMIN_USER|confirm [TX]|rollback-pending
-  relay-manager fail2ban status|install|apply|banned|unban IP
+  relay-manager fail2ban status|recommend [USER]|install|apply [IGNORE_IP_OR_CIDR...]|disable|banned|unban IP
   relay-manager backup list|create [config|upgrade]|restore ID|restore-nodes ID
   relay-manager update status|core VERSION|manager-package FILE [SHA256]|rollback-manager
   relay-manager remove manager|backups|exports
