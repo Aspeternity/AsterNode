@@ -103,6 +103,12 @@ assert_json "$applied" '
   .health.growth_policy.modifies_global_database_policy==false
 '
 assert_file_mode "$root/etc/fail2ban/jail.d/relay-manager-ssh.local" 644
+
+rm -f "$root/var/log/auth.log"
+missing_source=$(f2b_log_source_health_json)
+assert_json "$missing_source" '.status=="abnormal" and .backend=="polling" and .logpath=="/var/log/auth.log"'
+: >"$root/var/log/auth.log"
+
 grep -Fq -- '-t' "$RM_F2B_LOG" || fail 'Fail2ban candidate config was not validated'
 grep -Fq 'restart fail2ban' "$RM_SYSTEMCTL_LOG" || fail 'Fail2ban service was not restarted'
 assert_json "$(cat "$RM_STATE_FILE")" '
@@ -130,8 +136,6 @@ assert_json "$growth" '
 '
 
 rm -f "$root/var/log/auth.log"
-missing_source=$(f2b_log_source_health_json)
-assert_json "$missing_source" '.status=="abnormal" and .backend=="polling"'
 
 # Systemd backend must not carry a file logpath.
 mkdir -p "$root/run/systemd/journal"

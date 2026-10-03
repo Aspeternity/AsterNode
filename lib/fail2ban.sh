@@ -89,9 +89,101 @@ f2b_backend_json() {
   jq -n '{status:"unverified",backend:null,logpath:null,journalmatch_source:null,dependency:"no-supported-log-source"}'
 }
 
+f2b_managed_backend_json() {
+  local backend='' logpath='' enabled='' dep=true
+  if [[ -f $RM_F2B_DROPIN && ! -L $RM_F2B_DROPIN ]]; then
+    backend=$(awk '
+      BEGIN{sec=""}
+      /^[[:space:]]*#/ || /^[[:space:]]*$/ {next}
+      /^[[:space:]]*\[/ {
+        sec=$0
+        gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", sec)
+        sec=tolower(sec)
+        next
+      }
+      sec=="sshd" {
+        line=$0
+        sub(/[[:space:]]*[#;].*$/, "", line)
+        n=index(line,"=")
+        if(n>0){
+          k=tolower(substr(line,1,n-1)); v=substr(line,n+1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+          if(k=="backend"){print v; exit}
+        }
+      }' "$RM_F2B_DROPIN")
+    logpath=$(awk '
+      BEGIN{sec=""}
+      /^[[:space:]]*#/ || /^[[:space:]]*$/ {next}
+      /^[[:space:]]*\[/ {
+        sec=$0
+        gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", sec)
+        sec=tolower(sec)
+        next
+      }
+      sec=="sshd" {
+        line=$0
+        sub(/[[:space:]]*[#;].*$/, "", line)
+        n=index(line,"=")
+        if(n>0){
+          k=tolower(substr(line,1,n-1)); v=substr(line,n+1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+          if(k=="logpath"){print v; exit}
+        }
+      }' "$RM_F2B_DROPIN")
+    enabled=$(awk '
+      BEGIN{sec=""}
+      /^[[:space:]]*#/ || /^[[:space:]]*$/ {next}
+      /^[[:space:]]*\[/ {
+        sec=$0
+        gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", sec)
+        sec=tolower(sec)
+        next
+      }
+      sec=="sshd" {
+        line=$0
+        sub(/[[:space:]]*[#;].*$/, "", line)
+        n=index(line,"=")
+        if(n>0){
+          k=tolower(substr(line,1,n-1)); v=tolower(substr(line,n+1))
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+          if(k=="enabled"){print v; exit}
+        }
+      }' "$RM_F2B_DROPIN")
+  fi
+
+  if [[ -n $backend ]]; then
+    case "$backend" in
+      systemd)
+        f2b_systemd_python_available || dep=false
+        jq -n --argjson dep "$dep" --arg enabled "$enabled"           '{status:(if $dep then "ok" else "unverified" end),backend:"systemd",logpath:null,
+            journalmatch_source:"filter:sshd",dependency:(if $dep then "ok" else "missing-python-systemd" end),
+            configured:true,enabled:$enabled}'
+        ;;
+      polling|auto)
+        if [[ -n $logpath ]]; then
+          jq -n --arg backend "$backend" --arg logpath "$logpath" --arg enabled "$enabled"             '{status:"ok",backend:$backend,logpath:$logpath,journalmatch_source:null,dependency:"ok",configured:true,enabled:$enabled}'
+        else
+          jq -n --arg backend "$backend" --arg enabled "$enabled"             '{status:"unverified",backend:$backend,logpath:null,journalmatch_source:null,dependency:"missing-logpath",configured:true,enabled:$enabled}'
+        fi
+        ;;
+      *)
+        jq -n --arg backend "$backend" --arg enabled "$enabled"           '{status:"unverified",backend:$backend,logpath:null,journalmatch_source:null,dependency:"unsupported-configured-backend",configured:true,enabled:$enabled}'
+        ;;
+    esac
+    return
+  fi
+
+  local detected
+  detected=$(f2b_backend_json)
+  jq -c '. + {configured:false}' <<<"$detected"
+}
+
 f2b_log_source_health_json() {
   local backend_json status backend logical real query_ok=false
-  backend_json=$(f2b_backend_json)
+  backend_json=$(f2b_managed_backend_json)
   status=$(jq -r .status <<<"$backend_json")
   backend=$(jq -r '.backend // empty' <<<"$backend_json")
   if [[ $status != ok ]]; then
@@ -99,7 +191,7 @@ f2b_log_source_health_json() {
     return 0
   fi
   case "$backend" in
-    polling)
+    polling|auto)
       logical=$(jq -r '.logpath // empty' <<<"$backend_json")
       real=$(rm_path "$logical")
       if [[ -f $real && ! -L $real && -r $real ]]; then
