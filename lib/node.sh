@@ -89,7 +89,7 @@ node_prepare_spec() {
   jq '.' "$input" >"$output"
   node_normalize_sources_in_file "$output" || return $?
 
-  local nid sid priv pass uid i count tmp upid
+  local nid sid priv pass fallback_limits uid i count tmp upid
   nid=$(jq -r '.node.node_id // empty' "$output")
   [[ -n $nid ]] || nid=$(node_id_new)
   sid=$(jq -r '.node.reality.short_id // empty' "$output")
@@ -102,16 +102,18 @@ node_prepare_spec() {
     priv=$(jq -r .private_key <<<"$kp")
     pass=$(jq -r .password <<<"$kp")
   fi
+  fallback_limits=$(jq -c '.node.reality.fallback_limits // empty' "$output")
+  [[ -n $fallback_limits ]] || fallback_limits=$("$RM_PROTOCOL_VR" generate_fallback_limits) || return $?
 
   tmp=$(mktemp "${output}.prep.XXXX") || return "$RM_RC_INTERNAL"
-  jq --arg nid "$nid" --arg sid "$sid" --arg priv "$priv" --arg pass "$pass" --arg flow xtls-rprx-vision '
+  jq --arg nid "$nid" --arg sid "$sid" --arg priv "$priv" --arg pass "$pass" --argjson fallback_limits "$fallback_limits" --arg flow xtls-rprx-vision '
     .node.node_id=$nid
     | .node.protocol="vless-reality"
     | .node.flow=(.node.flow//$flow)
     | .node.access_mode=(.node.access_mode//"whitelist")
     | .node.enabled=(if .node.enabled==null then true else .node.enabled end)
     | .node.autostart=(if .node.autostart==null then true else .node.autostart end)
-    | .node.reality=((.node.reality//{}) + {private_key:$priv,password:$pass,short_id:$sid})
+    | .node.reality=((.node.reality//{}) + {private_key:$priv,password:$pass,short_id:$sid,fallback_limits:$fallback_limits})
     | .upstreams=(.upstreams//[])
   ' "$output" >"$tmp"
   mv "$tmp" "$output"
@@ -464,6 +466,42 @@ node_apply_candidate_state() {
   rm -rf "$tmpdir"
 }
 
+node_target_safety_preflight_spec() {
+  local spec=$1 mode=$2 nid target sni old_target='' old_sni='' probe summary
+  [[ ${RM_TEST_MODE} == 1 ]] && return 0
+
+  nid=$(jq -er '.node.node_id' "$spec") || return "$RM_RC_PRECONDITION"
+  target=$(jq -er '.node.target' "$spec") || return "$RM_RC_PRECONDITION"
+  sni=$(jq -er '.node.sni' "$spec") || return "$RM_RC_PRECONDITION"
+
+  if [[ $mode == upsert ]] && [[ -f $RM_STATE_FILE ]]; then
+    old_target=$(jq -r --arg nid "$nid" '.nodes[]|select(.node_id==$nid)|.target // empty' "$RM_STATE_FILE")
+    old_sni=$(jq -r --arg nid "$nid" '.nodes[]|select(.node_id==$nid)|.sni // empty' "$RM_STATE_FILE")
+    [[ $target == "$old_target" && $sni == "$old_sni" ]] && return 0
+  fi
+
+  declare -F target_probe >/dev/null 2>&1 || {
+    rm_error 'Target 安全探测模块不可用，拒绝创建/切换 REALITY Target'
+    return "$RM_RC_PRECONDITION"
+  }
+
+  probe=$(target_probe "$target" "$sni") || return $?
+  if jq -e '.recommendation_eligible==true' <<<"$probe" >/dev/null; then
+    rm_info "Target 安全门槛通过: $target / $sni"
+    return 0
+  fi
+
+  summary=$(jq -c '{
+    status,
+    recommendation_eligible,
+    recommendation_reason,
+    abuse_risk:(.abuse_risk.status//"unverified"),
+    catalog_recommendable:(.catalog_policy.recommendable//false)
+  }' <<<"$probe")
+  rm_error "Target 未通过防偷跑安全门槛，拒绝应用: $summary"
+  return "$RM_RC_PRECONDITION"
+}
+
 node_create_or_replace_spec() {
   local input=$1 mode=${2:-create} tmpdir spec candidate rc
   rm_require_root || return $?
@@ -478,6 +516,7 @@ node_create_or_replace_spec() {
     input="$tmpdir/enriched.json"
   fi
   node_prepare_spec "$input" "$spec" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  node_target_safety_preflight_spec "$spec" "$mode" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   node_candidate_from_spec "$spec" "$candidate" "$mode" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   node_apply_candidate_state "$candidate" "node-$mode" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
 

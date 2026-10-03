@@ -23,7 +23,16 @@ assert_json "$(cat "$RM_STATE_FILE")" '
   (.sources[0].upstream_ids|sort)==["up-line-a","up-line-b"]
 '
 assert_file_mode "$RM_XRAY_CONFIG" 640
-assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds|length)==1 and (.inbounds[0].settings.clients|length)==2'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '
+  (.inbounds|length)==1 and
+  (.inbounds[0].settings.clients|length)==2 and
+  .inbounds[0].streamSettings.realitySettings.limitFallbackUpload.bytesPerSec>0 and
+  .inbounds[0].streamSettings.realitySettings.limitFallbackDownload.bytesPerSec>0
+'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  .nodes[0].reality.fallback_limits.upload.bytes_per_sec>0 and
+  .nodes[0].reality.fallback_limits.download.bytes_per_sec>0
+'
 
 valid_replace="$root/valid-replace.json"
 jq '.node.name="sg-node-updated"' "$spec" >"$valid_replace"

@@ -62,8 +62,10 @@ tested_at:
 在落地 VPS 上对候选与手工 Target 运行探测，记录 DNS/TCP/TLS1.3/证书/H2/重复握手/延迟。
 
 - HTTP 非 200 不自动判坏；HTTP 重定向不进入推荐结果。
-- 内置候选探测必须输出 `recommended`：只从 `recommendable=true` 且 `suitable_measured` 的结果中按当前 VPS 实测握手延迟选择，同延迟时才优先官方参考候选。
-- `recommended` 只是本机实测推荐，不自动替换或写入节点 Target。
+- 内置候选探测必须输出 `abuse_risk` 与 `recommended`：除网络条件外，还要对当前解析 IP 使用无关 SNI 做有效主机名握手测试；`high` 或 `unverified` 均不得进入推荐。
+- 只从 `recommendable=true`、`recommendation_eligible=true` 且 `suitable_measured` 的结果中按当前 VPS 实测握手延迟选择，同延迟时才优先官方参考候选。
+- `recommended` 只是本机实测推荐，不自动替换或写入节点 Target；真实节点 create/replace 对新 Target 还必须重新执行安全门槛，禁止绕过。
+- 受管 REALITY 入站必须带持久化的随机 `limitFallbackUpload/Download`，作为跨 SNI 检测之外的第二道防偷跑保护；限速参数不得所有安装使用同一固定值。
 - Target 不得指回本节点监听端点形成循环。
 - Cloudflare 等共享 CDN 候选可以保留作对照，但默认不参与推荐，并需记录未认证回落转发的滥用风险判断。
 

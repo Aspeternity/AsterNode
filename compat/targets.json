@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "updated": "2026-10-03",
   "candidates": [
     {
@@ -91,5 +91,5 @@
       "note": "仅保留作对照候选；XTLS 文档警告 Cloudflare 等特殊 CDN Target 可能形成未认证流量转发，因此不参与自动推荐"
     }
   ],
-  "policy": "候选只用于当前 VPS 的受控探测。最低推荐条件为 DNS/TCP/TLS1.3/证书/H2/重复握手通过且目标域名不发生 HTTP 重定向；HTTP 非 200 本身不自动判坏。recommended 只从 recommendable=true 的 suitable_measured 候选中按实测握手延迟最低选择，official_reference 仅在相同延迟时作为次级排序；推荐不会自动写入节点配置。CDN/特殊网络目标需额外审查未认证回落转发风险。"
+  "policy": "候选只用于当前 VPS 的受控探测。最低推荐条件为 DNS/TCP/TLS1.3/证书/H2/重复握手通过、目标域名不发生 HTTP 重定向，且对当前解析 IP 的跨 SNI 安全探测为 low；high 或 unverified 一律不推荐。HTTP 非 200 本身不自动判坏。recommended 只从 recommendable=true 且 recommendation_eligible=true 的候选中按实测握手延迟最低选择，official_reference 仅在相同延迟时作为次级排序；推荐不会自动写入节点配置。受管 REALITY 节点另强制使用每节点随机化 fallback 限速作为第二道防偷跑保护。"
 }

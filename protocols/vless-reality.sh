@@ -18,7 +18,8 @@ vr_describe() {
     notes:[
       "服务端/客户端 Xray JSON 使用 v26.3.27 已验证字段 network=raw",
       "分享 URI 为兼容常见客户端/面板使用 type=tcp",
-      "v26.3.27 REALITY 客户端原生字段使用 password；URI 兼容字段使用 pbk"
+      "v26.3.27 REALITY 客户端原生字段使用 password；URI 兼容字段使用 pbk",
+      "服务端强制启用每节点随机化 fallback 限速，降低未认证流量被用于偷跑/加速的风险"
     ]
   }'
 }
@@ -48,6 +49,34 @@ vr_valid_sni() {
   rm_valid_host "$sni" || return 1
   rm_normalize_ip_or_cidr "$sni" >/dev/null 2>&1 && return 1
   [[ $sni == *.* ]]
+}
+
+vr_random_range() {
+  local min=$1 max=$2 hex value span
+  rm_have openssl || return "$RM_RC_PRECONDITION"
+  ((min <= max)) || return "$RM_RC_PRECONDITION"
+  hex=$(openssl rand -hex 4) || return "$RM_RC_PRECONDITION"
+  value=$((16#$hex))
+  span=$((max-min+1))
+  printf '%s\n' $((min + (value % span)))
+}
+
+vr_generate_fallback_limits() {
+  local ua ur ub da dr db
+  # Randomized per node and persisted in state. Ranges intentionally vary around
+  # moderate limits to reduce abuse without using a fixed one-click fingerprint.
+  ua=$(vr_random_range 2097152 6291456) || return $?
+  ur=$(vr_random_range 262144 786432) || return $?
+  ub=$(vr_random_range 1048576 3145728) || return $?
+  da=$(vr_random_range 2097152 6291456) || return $?
+  dr=$(vr_random_range 393216 1048576) || return $?
+  db=$(vr_random_range 1572864 4194304) || return $?
+
+  jq -n --argjson ua "$ua" --argjson ur "$ur" --argjson ub "$ub" \
+    --argjson da "$da" --argjson dr "$dr" --argjson db "$db" '{
+      upload:{after_bytes:$ua,bytes_per_sec:$ur,burst_bytes_per_sec:$ub},
+      download:{after_bytes:$da,bytes_per_sec:$dr,burst_bytes_per_sec:$db}
+    }'
 }
 
 vr_validate() {
@@ -89,6 +118,22 @@ vr_validate() {
     ([.upstreams[] | ((has("enabled")|not) or (.enabled|type=="boolean"))] | all)
   ' "$f" >/dev/null || {
     rm_error 'enabled/autostart 必须是 JSON 布尔值'
+    return "$RM_RC_PRECONDITION"
+  }
+
+  jq -e '
+    def uint_between($min;$max):
+      (type=="number") and (.==floor) and (. >= $min) and (. <= $max);
+    def limit_ok:
+      (.after_bytes | uint_between(1048576;16777216)) and
+      (.bytes_per_sec | uint_between(131072;2097152)) and
+      (.burst_bytes_per_sec | uint_between(262144;8388608)) and
+      (.burst_bytes_per_sec >= .bytes_per_sec);
+    (.node.reality.fallback_limits|type)=="object" and
+    (.node.reality.fallback_limits.upload|limit_ok) and
+    (.node.reality.fallback_limits.download|limit_ok)
+  ' "$f" >/dev/null || {
+    rm_error 'REALITY fallback 限速缺失或超出安全范围'
     return "$RM_RC_PRECONDITION"
   }
 
@@ -149,7 +194,17 @@ vr_render_server() {
           xver:0,
           serverNames:[.node.sni],
           privateKey:.node.reality.private_key,
-          shortIds:[.node.reality.short_id]
+          shortIds:[.node.reality.short_id],
+          limitFallbackUpload:{
+            afterBytes:.node.reality.fallback_limits.upload.after_bytes,
+            bytesPerSec:.node.reality.fallback_limits.upload.bytes_per_sec,
+            burstBytesPerSec:.node.reality.fallback_limits.upload.burst_bytes_per_sec
+          },
+          limitFallbackDownload:{
+            afterBytes:.node.reality.fallback_limits.download.after_bytes,
+            bytesPerSec:.node.reality.fallback_limits.download.bytes_per_sec,
+            burstBytesPerSec:.node.reality.fallback_limits.download.burst_bytes_per_sec
+          }
         },
         rawSettings:{acceptProxyProtocol:false,header:{type:"none"}}
       }
@@ -285,7 +340,7 @@ vr_collect() {
 }
 
 usage() {
-  printf 'Usage: %s {describe|collect|validate|render_server|render_client|render_uri|required_ports|probe|generate_uuid|generate_keypair|generate_short_id} ...\n' "$0" >&2
+  printf 'Usage: %s {describe|collect|validate|render_server|render_client|render_uri|required_ports|probe|generate_uuid|generate_keypair|generate_short_id|generate_fallback_limits} ...\n' "$0" >&2
 }
 
 cmd=${1:-}
@@ -302,5 +357,6 @@ case "$cmd" in
   generate_uuid) vr_generate_uuid "$@";;
   generate_keypair) vr_generate_keypair "$@";;
   generate_short_id) vr_generate_short_id "$@";;
+  generate_fallback_limits) vr_generate_fallback_limits "$@";;
   *) usage; exit "$RM_RC_PRECONDITION";;
 esac

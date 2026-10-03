@@ -26,10 +26,12 @@ target_probe() {
     cdn-fast.example:443) latency=5 ;;
     *) latency=99 ;;
   esac
-  jq -n --arg t "$target" --arg s "$sni" --argjson latency "$latency" '{
+  local eligible=true abuse=low
+  [[ $target == cdn-fast.example:443 ]] && eligible=false && abuse=high
+  jq -n --arg t "$target" --arg s "$sni" --argjson latency "$latency" --argjson eligible "$eligible" --arg abuse "$abuse" '{
     status:"suitable_measured",target:$t,sni:$s,resolved_address:"192.0.2.1",latency_ms:$latency,
     checks:{dns:"ok",tcp:true,tls13:true,certificate_hostname:true,h2:true,repeated_handshake:true,http_status:"200",http_redirect:false,redirect:null},
-    reason:null
+    abuse_risk:{status:$abuse},recommendation_eligible:$eligible,reason:null
   }'
 }
 
@@ -42,6 +44,7 @@ assert_json "$candidates" '
   .recommended.latency_ms==20 and
   .recommended.candidate.recommendable==true and
   .recommended.candidate.risk_class=="standard" and
+  .recommended.abuse_risk.status=="low" and
   .auto_selected==false and
   .auto_applied==false and
   (.selection_basis|contains("不会自动写入节点配置"))

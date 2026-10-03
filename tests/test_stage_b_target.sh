@@ -8,7 +8,7 @@ export RM_ROOT="$root" RM_TEST_MODE=1
 source "$PROJECT_DIR/lib/target.sh"
 
 assert_json "$(cat "$RM_TARGETS_FILE")" '
-  .schema_version==2 and
+  .schema_version==3 and
   (.candidates|length)>=10 and
   all(.candidates[]; (.target|type)=="string" and (.sni|type)=="string" and (.recommendable|type)=="boolean") and
   (any(.candidates[]; .sni=="www.microsoft.com")) and
@@ -47,6 +47,15 @@ fakebin="$root/fakebin"
 mkdir -p "$fakebin"
 cat >"$fakebin/openssl" <<'SH'
 #!/usr/bin/env bash
+sni=''
+while (($#)); do
+  if [[ $1 == -servername ]]; then shift; sni=${1:-}; break; fi
+  shift
+done
+if [[ $sni != www.example.com ]]; then
+  printf 'CONNECTED(00000003)\nSSL alert number 112\ntlsv1 unrecognized name\n'
+  exit 1
+fi
 printf 'CONNECTED(00000003)\nNew, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384\nVerification: OK\nALPN protocol: h2\nVerify return code: 0 (ok)\n'
 printf '\0binary-tail\n'
 SH
@@ -67,7 +76,9 @@ assert_json "$probe" '
   .checks.certificate_hostname==true and
   .checks.h2==true and
   .checks.repeated_handshake==true and
-  .checks.http_redirect==false
+  .checks.http_redirect==false and
+  .abuse_risk.status=="low" and
+  .recommendation_eligible==true
 '
 grep -F 'ignored null byte' "$nul_stderr" >/dev/null && fail 'Target probe still feeds NUL bytes through command substitution'
 PATH=$PATH_ORIG

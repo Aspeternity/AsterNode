@@ -7,6 +7,7 @@ RM_TARGETS_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/compat/t
 RM_TARGET_HANDSHAKE_ATTEMPTS=2
 RM_TARGET_TLS_TIMEOUT_SECONDS=6
 RM_TARGET_HTTP_TIMEOUT_SECONDS=5
+RM_TARGET_ABUSE_TIMEOUT_SECONDS=4
 RM_TARGET_MAX_PARALLEL=2
 
 target_split() {
@@ -22,9 +23,88 @@ target_resolve_host() {
   getent ahosts "$host" 2>/dev/null | awk 'NR==1{print $1;exit}'
 }
 
+target_catalog_policy_json() {
+  local target=$1 sni=$2
+  if [[ -r $RM_TARGETS_FILE ]]; then
+    jq -c --arg t "$target" --arg s "$sni" '
+      ([.candidates[]? | select(.target==$t and .sni==$s)] | first) as $c |
+      if $c==null then
+        {recommendable:true,official_reference:false,risk_class:"unclassified-manual",note:"手工 Target，必须通过动态滥用风险探测",source:"manual"}
+      else
+        {
+          recommendable:(if ($c|has("recommendable")) then $c.recommendable else true end),
+          official_reference:($c.official_reference//false),
+          risk_class:($c.risk_class//"standard"),
+          note:($c.note//""),
+          source:"catalog"
+        }
+      end
+    ' "$RM_TARGETS_FILE"
+  else
+    jq -nc '{recommendable:true,official_reference:false,risk_class:"unclassified-manual",note:"候选目录不可读，依赖动态滥用风险探测",source:"manual"}'
+  fi
+}
+
+target_cross_sni_risk_json() {
+  local resolved=$1 port=$2 original_sni=$3 tmpdir=$4 connect probe log rc
+  local accepted=false timed_out=false tls13 h2 results='[]' count=0
+  local -a probes=(www.cloudflare.com www.microsoft.com www.google.com)
+
+  connect=$resolved
+  [[ $resolved == *:* ]] && connect="[$resolved]"
+
+  for probe in "${probes[@]}"; do
+    [[ $probe == "$original_sni" ]] && continue
+    ((count >= 2)) && break
+    log="$tmpdir/cross-sni-$count.log"
+
+    set +e
+    timeout "$RM_TARGET_ABUSE_TIMEOUT_SECONDS" openssl s_client \
+      -connect "$connect:$port" -servername "$probe" -verify_hostname "$probe" -verify_return_error \
+      -alpn h2 -tls1_3 </dev/null >"$log" 2>&1
+    rc=$?
+    set -e
+
+    tls13=false
+    h2=false
+    grep -aEqi 'Protocol version:[[:space:]]*TLSv1\.3|Protocol[[:space:]]*:?[[:space:]]*TLSv1\.3|New,[[:space:]]*TLSv1\.3' "$log" && tls13=true
+    grep -aEqi 'ALPN protocol:[[:space:]]*h2|Negotiated protocol:[[:space:]]*h2|ALPN.*h2' "$log" && h2=true
+
+    if ((rc==0)) && [[ $tls13 == true ]]; then accepted=true; fi
+    ((rc==124)) && timed_out=true
+
+    results=$(jq -c --arg sni "$probe" --argjson rc "$rc" --argjson tls13 "$tls13" --argjson h2 "$h2" \
+      '. + [{sni:$sni,exit_code:$rc,tls13:$tls13,h2:$h2,valid_hostname_handshake:($rc==0 and $tls13)}]' <<<"$results")
+    count=$((count+1))
+  done
+
+  if [[ $accepted == true ]]; then
+    jq -n --argjson probes "$results" '{
+      status:"high",
+      cross_sni_valid_hostname:true,
+      probes:$probes,
+      reason:"Target 当前解析 IP 能为无关 SNI 完成有效 TLS 1.3 主机名验证，存在共享边缘/跨 SNI 转发滥用风险"
+    }'
+  elif [[ $timed_out == true ]]; then
+    jq -n --argjson probes "$results" '{
+      status:"unverified",
+      cross_sni_valid_hostname:false,
+      probes:$probes,
+      reason:"跨 SNI 安全探测发生超时，不能证明 Target 不会转发其他站点流量"
+    }'
+  else
+    jq -n --argjson probes "$results" '{
+      status:"low",
+      cross_sni_valid_hostname:false,
+      probes:$probes,
+      reason:"对两个无关 SNI 的有效主机名握手均未通过；本次未发现共享边缘跨 SNI 转发证据"
+    }'
+  fi
+}
+
 target_probe() {
-  local target=$1 sni=$2 host port resolved start end ms tmpdir first_log second_log hdrfile
-  local http_status='unverified' redirect='' redirected=false
+  local target=$1 sni=$2 host port resolved connect start end ms tmpdir first_log second_log hdrfile
+  local http_status='unverified' redirect='' redirected=false catalog abuse recommendation_eligible=false recommendation_reason=''
   local risk_note='REALITY 未认证流量可能表现为转发到 Target；CDN/共享目标需单独评估滥用与来源限制。本工具不会因 Target 探测自动开放额外端口。'
 
   rm_split_host_port "$target" >/dev/null 2>&1 || {
@@ -63,13 +143,15 @@ target_probe() {
 
   tmpdir=$(rm_safe_tmpdir) || return $?
   first_log="$tmpdir/tls-1.log"
+  connect=$resolved
+  [[ $resolved == *:* ]] && connect="[$resolved]"
   second_log="$tmpdir/tls-2.log"
   hdrfile="$tmpdir/http-headers.txt"
 
   start=$(date +%s%3N 2>/dev/null || date +%s000)
   set +e
   timeout "$RM_TARGET_TLS_TIMEOUT_SECONDS" openssl s_client \
-    -connect "$target" -servername "$sni" -verify_hostname "$sni" -verify_return_error \
+    -connect "$connect:$port" -servername "$sni" -verify_hostname "$sni" -verify_return_error \
     -alpn h2 -tls1_3 </dev/null >"$first_log" 2>&1
   local rc1=$?
   set -e
@@ -78,7 +160,7 @@ target_probe() {
 
   set +e
   timeout "$RM_TARGET_TLS_TIMEOUT_SECONDS" openssl s_client \
-    -connect "$target" -servername "$sni" -verify_hostname "$sni" -verify_return_error \
+    -connect "$connect:$port" -servername "$sni" -verify_hostname "$sni" -verify_return_error \
     -alpn h2 -tls1_3 </dev/null >"$second_log" 2>&1
   local rc2=$?
   set -e
@@ -119,6 +201,25 @@ target_probe() {
     reason='基础握手成功，但 H2 或重复握手稳定性未达到推荐条件'
   fi
 
+  catalog=$(target_catalog_policy_json "$target" "$sni")
+  abuse=$(jq -nc '{status:"unverified",cross_sni_valid_hostname:null,probes:[],reason:"基础 Target 条件未通过，未执行跨 SNI 安全探测"}')
+  if [[ $status == suitable_measured ]]; then
+    abuse=$(target_cross_sni_risk_json "$resolved" "$port" "$sni" "$tmpdir")
+  fi
+
+  if [[ $status == suitable_measured ]] &&
+     jq -e '.status=="low"' <<<"$abuse" >/dev/null &&
+     jq -e '.recommendable==true' <<<"$catalog" >/dev/null; then
+    recommendation_eligible=true
+    recommendation_reason='网络条件与跨 SNI 安全门槛均通过'
+  elif jq -e '.recommendable==false' <<<"$catalog" >/dev/null; then
+    recommendation_reason='候选目录将此 Target 标记为不参与推荐'
+  elif [[ $status == suitable_measured ]]; then
+    recommendation_reason=$(jq -r '.reason' <<<"$abuse")
+  else
+    recommendation_reason=${reason:-'Target 网络条件未达到推荐标准'}
+  fi
+
   local warning=''
   if [[ $sni == *apple* || $sni == *icloud* ]]; then
     warning='当前固定 Xray 版本会对 Apple/iCloud REALITY Target 给出风险警告，本项目不推荐作为默认候选'
@@ -129,7 +230,8 @@ target_probe() {
     --argjson latency "$ms" --argjson tcp "$tcp" --argjson tls "$tls" \
     --argjson cert "$cert" --argjson h2 "$h2" --argjson stable "$stable" \
     --arg http "$http_status" --arg redirect "$redirect" --argjson redirected "$redirected" --arg reason "$reason" \
-    --arg warning "$warning" --arg risk "$risk_note" \
+    --arg warning "$warning" --arg risk "$risk_note" --arg recommendation_reason "$recommendation_reason" \
+    --argjson catalog "$catalog" --argjson abuse "$abuse" --argjson eligible "$recommendation_eligible" \
     --argjson attempts "$RM_TARGET_HANDSHAKE_ATTEMPTS" \
     --argjson tls_timeout "$RM_TARGET_TLS_TIMEOUT_SECONDS" \
     --argjson http_timeout "$RM_TARGET_HTTP_TIMEOUT_SECONDS" \
@@ -139,7 +241,11 @@ target_probe() {
         redirect:(if $redirect=="" then null else $redirect end)},
       reason:(if $reason=="" then null else $reason end),
       warning:(if $warning=="" then null else $warning end),
-      note:"HTTP 非 200 不自动等于 REALITY 不可用；HTTP 重定向不进入推荐结果。结果仅代表当前 VPS 本次实测。",
+      abuse_risk:$abuse,
+      catalog_policy:$catalog,
+      recommendation_eligible:$eligible,
+      recommendation_reason:$recommendation_reason,
+      note:"HTTP 非 200 不自动等于 REALITY 不可用；HTTP 重定向、共享边缘跨 SNI 风险或未验证风险均不进入推荐结果。结果仅代表当前 VPS 本次实测。",
       risk_note:$risk,
       probe_policy:{handshake_attempts:$attempts,tls_timeout_seconds:$tls_timeout,
         http_timeout_seconds:$http_timeout}}'
@@ -183,17 +289,17 @@ target_probe_candidates() {
   results=$(jq -s '.' "$tmpdir"/*.json)
   suitable=$(jq '[
       .[] | select(.status=="suitable_measured") |
-      {target,sni,resolved_address,latency_ms,candidate}
+      {target,sni,resolved_address,latency_ms,recommendation_eligible,abuse_risk,candidate}
     ] | sort_by(.latency_ms)' <<<"$results")
   recommended=$(jq '[
       .[] |
-      select(.status=="suitable_measured" and (if (.candidate|has("recommendable")) then .candidate.recommendable else true end)==true) |
+      select(.status=="suitable_measured" and .recommendation_eligible==true and (if (.candidate|has("recommendable")) then .candidate.recommendable else true end)==true) |
       . + {_selection_rank:[.latency_ms,(if (.candidate.official_reference//false) then 0 else 1 end),(.candidate.order//999)]}
     ] | sort_by(._selection_rank) |
       (.[0] // null) |
       if .==null then null else
         {target,sni,resolved_address,latency_ms,candidate,
-         selection_reason:"recommendable suitable_measured 中实测握手延迟最低；同延迟时优先官方参考候选"}
+         selection_reason:"通过动态跨 SNI 滥用风险门槛的 recommendable suitable_measured 中实测握手延迟最低；同延迟时优先官方参考候选"}
       end' <<<"$results")
   policy=$(jq -r .policy "$RM_TARGETS_FILE")
 
@@ -207,7 +313,7 @@ target_probe_candidates() {
       policy:$policy,
       auto_selected:false,
       auto_applied:false,
-      selection_basis:"只在 recommendable=true、无 HTTP 重定向且 suitable_measured 的候选中按当前 VPS 实测握手延迟选择；不会自动写入节点配置",
+      selection_basis:"只在 recommendable=true、无 HTTP 重定向、动态跨 SNI 滥用风险为 low 且 suitable_measured 的候选中按当前 VPS 实测握手延迟选择；high/unverified 均拒绝推荐，也不会自动写入节点配置",
       probe_policy:{max_parallel:$max_parallel,handshake_attempts:$attempts,tls_timeout_seconds:$timeout}}'
   rm -rf "$tmpdir"
 }
