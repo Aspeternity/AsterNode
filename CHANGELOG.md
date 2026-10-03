@@ -2,6 +2,7 @@
 
 ## Unreleased - Stage D maintenance development
 
+- Fixed Debian/Ubuntu fresh-UFW framework classification: before/after rules are now verified against the installed UFW template and UCF historical MD5 lists instead of dpkg Conffiles; unknown edits, symlinks, and unverifiable metadata remain fail-closed.
 - Real-VPS Target probing now parses full OpenSSL TLS output from temporary files, eliminating the -brief ALPN false-negative/NUL-command-substitution issue; candidate probing also filters HTTP redirects, expands the versioned candidate pool, and reports a measured recommended Target without auto-applying it.
 - Added a hard anti-abuse Target gate: candidate probes test the resolved IP against unrelated valid SNI hostnames, high/unverified cross-SNI risk is excluded from recommendation, and real node create/Target changes re-run the gate before apply.
 - Managed REALITY inbounds now persist per-node randomized limitFallbackUpload/limitFallbackDownload values supported by pinned Xray v26.3.27, reducing unauthenticated fallback bandwidth abuse without a single fixed one-click fingerprint.

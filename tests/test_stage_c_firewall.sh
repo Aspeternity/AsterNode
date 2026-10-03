@@ -24,6 +24,65 @@ EOF
 source "$PROJECT_DIR/lib/firewall.sh"
 state_init
 
+# Debian/Ubuntu UFW manages before/after framework rules through UCF rather
+# than dpkg Conffiles. Exercise the real file/hash classifier directly.
+mkdir -p "$root/etc/ufw" "$root/usr/share/ufw"
+for base in before.rules after.rules before6.rules after6.rules; do
+  printf 'official-%s-v1\n' "$base" >"$root/usr/share/ufw/$base"
+  cp "$root/usr/share/ufw/$base" "$root/etc/ufw/$base"
+  hash=$(md5sum "$root/usr/share/ufw/$base" | awk '{print $1}')
+  printf '%s  /usr/share/ufw/%s\n' "$hash" "$base" >"$root/usr/share/ufw/$base.md5sum"
+done
+
+integrity=$(fw_framework_integrity_files_json)
+assert_json "$integrity" '
+  .status=="ok" and .modified==false and
+  (.paths|length)==0 and (.unverified_paths|length)==0
+'
+
+# A locally retained older official UCF version must remain acceptable when
+# its hash is present in the package history list.
+printf 'official-before.rules-v0\n' >"$root/etc/ufw/before.rules"
+old_hash=$(md5sum "$root/etc/ufw/before.rules" | awk '{print $1}')
+printf '%s  /usr/share/ufw/before.rules\n' "$old_hash" >>"$root/usr/share/ufw/before.rules.md5sum"
+integrity=$(fw_framework_integrity_files_json)
+assert_json "$integrity" '.status=="ok" and .modified==false'
+
+# Unknown local edits are not silently accepted.
+printf 'local-admin-edit\n' >"$root/etc/ufw/after.rules"
+integrity=$(fw_framework_integrity_files_json)
+assert_json "$integrity" '
+  .status=="modified" and .modified==true and
+  any(.paths[]; .=="/etc/ufw/after.rules")
+'
+
+# Symlink substitution is treated as modification even when content matches.
+cp "$root/usr/share/ufw/after.rules" "$root/etc/ufw/after.rules"
+rm "$root/etc/ufw/after6.rules"
+ln -s "$root/usr/share/ufw/after6.rules" "$root/etc/ufw/after6.rules"
+integrity=$(fw_framework_integrity_files_json)
+assert_json "$integrity" '
+  .status=="modified" and
+  any(.paths[]; .=="/etc/ufw/after6.rules")
+'
+
+# If neither the current package template nor UCF history can prove a file,
+# classification must remain fail-closed as unverified.
+rm "$root/etc/ufw/after6.rules"
+cp "$root/usr/share/ufw/after6.rules" "$root/etc/ufw/after6.rules"
+rm "$root/usr/share/ufw/before6.rules" "$root/usr/share/ufw/before6.rules.md5sum"
+integrity=$(fw_framework_integrity_files_json)
+assert_json "$integrity" '
+  .status=="unverified" and .modified==null and
+  any(.unverified_paths[]; .=="/etc/ufw/before6.rules")
+'
+
+# Restore the fixture used by the adapter tests below.
+printf 'official-before6.rules-v1\n' >"$root/usr/share/ufw/before6.rules"
+cp "$root/usr/share/ufw/before6.rules" "$root/etc/ufw/before6.rules"
+hash=$(md5sum "$root/usr/share/ufw/before6.rules" | awk '{print $1}')
+printf '%s  /usr/share/ufw/before6.rules\n' "$hash" >"$root/usr/share/ufw/before6.rules.md5sum"
+
 cat >"$RM_UFW_STATUS_FILE" <<'EOF'
 Status: inactive
 EOF
@@ -144,4 +203,4 @@ grep -Fq -- '--force delete allow to any port 443' "$RM_UFW_LOG" ||
 [[ -f "$root/etc/systemd/system/relay-manager-temp-node-fw.timer" ]] ||
   fail 'expired timer unit should remain as an inert owned file'
 
-pass 'Stage C UFW safe enable, whitelist ownership, conflict refusal and timed public access'
+pass 'Stage C UFW UCF integrity, safe enable, whitelist ownership, conflict refusal and timed public access'
