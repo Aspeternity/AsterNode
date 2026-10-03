@@ -51,7 +51,7 @@ f2b_backend_json() {
   if [[ ${RM_TEST_MODE} == 1 && -n ${RM_F2B_TEST_BACKEND:-} ]]; then
     case "$RM_F2B_TEST_BACKEND" in
       systemd)
-        jq -n --argjson dep "$(f2b_systemd_python_available && printf true || printf false)" '{status:"ok",backend:"systemd",logpath:null,journalmatch_source:"filter:sshd",dependency:(if $dep then "ok" else "missing-python-systemd" end)}'
+        jq -n --argjson dep "$(f2b_systemd_python_available && printf true || printf false)" '{status:(if $dep then "ok" else "unverified" end),backend:"systemd",logpath:null,journalmatch_source:"filter:sshd",dependency:(if $dep then "ok" else "missing-python-systemd" end)}'
         ;;
       polling)
         jq -n --arg p "${RM_F2B_TEST_LOGPATH:-/var/log/auth.log}" '{status:"ok",backend:"polling",logpath:$p,journalmatch_source:null,dependency:"ok"}'
