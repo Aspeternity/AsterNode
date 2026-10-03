@@ -50,15 +50,41 @@ Target 候选列表本身不联网；主动探测才会联网：
 ./relay-manager.sh target probe TARGET SNI
 ```
 
-## 开发安装入口
+## 安装入口
 
-当前仅用于开发/专用测试 VPS：
+源码安装仍只用于开发/专用测试 VPS：
 
 ```bash
 sudo ./install.sh --install-source
 ```
 
-正式远程 bootstrap、发行包签名、公钥轮换、完整更新回退与生产发布属于阶段 D。在这些门槛完成前，不应把当前 source-tree 安装入口当作正式分发方式。
+Stage D 已建立**固定版本发行包 + 受信公钥 + 一行 bootstrap** 的代码链。正式发布时由发行流程生成类似 `bootstrap-<version>.sh` 的独立脚本；脚本内固定版本、发行包 HTTPS URL、发行包 SHA-256、公钥 HTTPS URL和公钥 SHA-256，不跟随浮动 `main` / `latest`。
+
+推荐的可审查方式是先下载固定版本 bootstrap，阅读后再执行：
+
+```bash
+curl -fsSLo bootstrap-<version>.sh '<固定版本 bootstrap HTTPS URL>'
+less bootstrap-<version>.sh
+sudo bash bootstrap-<version>.sh
+```
+
+如果接受“远程 bootstrap 本身由该 HTTPS 地址提供”这一首次信任前提，也可以使用：
+
+```bash
+bash <(curl -fsSL '<固定版本 bootstrap HTTPS URL>')
+```
+
+这个一行入口**不能神奇地验证自己是否已在下载前被篡改**；它能做的是在自身可信的前提下，固定并校验后续发行包和发行公钥的 SHA-256，再由包内安装器验证签名 manifest、文件集合、大小、权限和内容哈希。不会从浮动分支分散下载模块。
+
+已下载的发行包也可显式安装：
+
+```bash
+sudo ./install.sh --package relay-manager-<version>.tar.gz \
+  --sha256 '<固定发行包 SHA-256>' \
+  --trusted-key RELEASE.pub.pem
+```
+
+本项目当前仍是开发阶段；正式公共 URL、密钥轮换流程以及 A-D 统一实机 Gate 完成前，不宣称生产稳定。
 
 ## 测试
 
@@ -106,6 +132,6 @@ docs/                      需求矩阵、测试报告和审查交接
 1. **A 基础**：检测、状态模型、模块接口、事务与恢复、安装入口。
 2. **B 节点**：Xray、VLESS + RAW/TCP + REALITY、线路机、导出、Target、基础诊断。代码/自动化基线完成，真实网络 Gate 待最终验收。
 3. **C 安全**：UFW、SSH 公钥/迁移/保护、Fail2ban。代码/隔离自动化收尾完成，真实安全 Gate 待最终验收。
-4. **D 维护**：更新回退、备份恢复、卸载、发行包与完整兼容矩阵。**下一阶段**
+4. **D 维护**：更新回退、备份恢复、卸载、发行包与完整兼容矩阵。**开发中：签名发行包与固定版本 bootstrap 已进入自动化验证**
 
 需求逐项状态与未验证边界见 `docs/IMPLEMENTATION_MATRIX.md` 和 `docs/TEST_REPORT.md`。

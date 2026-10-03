@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased - Stage D maintenance development
+
+- Added signed, manifest-verified manager release packages with pinned trust-anchor handling and controlled version-directory switching.
+- Added a generator for fixed-version HTTPS bootstrap scripts that pin both package and release-public-key SHA-256 values and reject unsafe archive paths/types before extraction.
+- Manager package installation now requires the fixed outer package SHA-256; the bootstrap never follows floating `main` or `latest`.
+- Added local-only update status and current-manager integrity verification so offline/network failures do not block inspection of installed state.
+- Preserved explicit first-bootstrap trust boundaries in README: a remote bootstrap cannot independently prove the integrity of itself.
+- Stage D release/bootstrap remains pre-production until the remaining update, backup/restore, removal, resource and final VM/VPS gates are complete.
+
 ## Unreleased - Stage C security development
 
 - Added effective SSH policy inspection for service/socket mode, Include/Match/cloud-init and startup argument overrides.

@@ -337,12 +337,13 @@ update_install_manager_package() {
   rm_require_root || return $?
   [[ -f $package && ! -L $package ]] || return "$RM_RC_PRECONDITION"
 
-  if [[ -n $expected_sha ]]; then
-    [[ $expected_sha =~ ^[0-9a-fA-F]{64}$ ]] || return "$RM_RC_PRECONDITION"
-    if [[ $(rm_sha256_file "$package") != "${expected_sha,,}" ]]; then
-      rm_error '安装包 SHA-256 不匹配'
-      return "$RM_RC_PRECONDITION"
-    fi
+  [[ $expected_sha =~ ^[0-9a-fA-F]{64}$ ]] || {
+    rm_error '管理器安装必须提供固定发行包 SHA-256'
+    return "$RM_RC_PRECONDITION"
+  }
+  if [[ $(rm_sha256_file "$package") != "${expected_sha,,}" ]]; then
+    rm_error '安装包 SHA-256 不匹配'
+    return "$RM_RC_PRECONDITION"
   fi
 
   verify_key=${explicit_key:-$RM_TRUSTED_RELEASE_KEY}
@@ -505,6 +506,88 @@ update_manager_rollback() {
     return "$RM_RC_APPLY_ROLLED_BACK"
   fi
   jq -n --arg path "$prev_real" --arg previous "$current"     '{status:"rolled_back",current_path:$path,previous_path:$previous}'
+}
+
+update_status_json() {
+  local current='' current_version=null current_path=null bin_status=absent key_status=absent key_sha=null
+  local previous_path=null previous_version=null core_path=null core_version=null state_present=false state_valid=false
+  local raw previous=''
+
+  if [[ -L $RM_MANAGER_CURRENT ]]; then
+    raw=$(readlink -f "$RM_MANAGER_CURRENT" 2>/dev/null || true)
+    if [[ -n $raw && $raw == "$RM_VERSION_BASE"/* && -d $raw && ! -L $raw ]]; then
+      current=$raw
+      current_path=$(jq -Rn --arg v "$raw" '$v')
+      if [[ -f $raw/MANIFEST.json && ! -L $raw/MANIFEST.json ]]; then
+        current_version=$(jq -c '.version // null' "$raw/MANIFEST.json" 2>/dev/null || printf 'null')
+      elif [[ -f $raw/VERSION && ! -L $raw/VERSION ]]; then
+        current_version=$(jq -Rn --arg v "$(cat "$raw/VERSION")" '$v')
+      fi
+    fi
+  fi
+
+  if [[ -e $RM_BIN_LINK || -L $RM_BIN_LINK ]]; then
+    if [[ -L $RM_BIN_LINK && -n $current &&
+          $(readlink "$RM_BIN_LINK" 2>/dev/null || true) == "$RM_MANAGER_CURRENT/relay-manager.sh" &&
+          $(readlink -f "$RM_BIN_LINK" 2>/dev/null || true) == "$current/relay-manager.sh" ]]; then
+      bin_status=managed
+    else
+      bin_status=foreign_or_inconsistent
+    fi
+  fi
+
+  if [[ -e $RM_TRUSTED_RELEASE_KEY || -L $RM_TRUSTED_RELEASE_KEY ]]; then
+    if [[ -f $RM_TRUSTED_RELEASE_KEY && ! -L $RM_TRUSTED_RELEASE_KEY ]] &&
+       openssl pkey -pubin -in "$RM_TRUSTED_RELEASE_KEY" -noout >/dev/null 2>&1; then
+      key_status=present
+      key_sha=$(jq -Rn --arg v "$(rm_sha256_file "$RM_TRUSTED_RELEASE_KEY")" '$v')
+    else
+      key_status=invalid
+    fi
+  fi
+
+  if [[ -f $RM_STATE_FILE && ! -L $RM_STATE_FILE ]]; then
+    state_present=true
+    if state_validate >/dev/null 2>&1; then
+      state_valid=true
+      previous=$(jq -r '.previous_manager_path // empty' "$RM_STATE_FILE")
+      if [[ -n $previous ]]; then
+        previous_path=$(jq -Rn --arg v "$previous" '$v')
+        if [[ -f $previous/MANIFEST.json && ! -L $previous/MANIFEST.json ]]; then
+          previous_version=$(jq -c '.version // null' "$previous/MANIFEST.json" 2>/dev/null || printf 'null')
+        elif [[ -f $previous/VERSION && ! -L $previous/VERSION ]]; then
+          previous_version=$(jq -Rn --arg v "$(cat "$previous/VERSION")" '$v')
+        fi
+      fi
+    fi
+  fi
+
+  if [[ -L $RM_CORE_CURRENT ]]; then
+    raw=$(readlink -f "$RM_CORE_CURRENT" 2>/dev/null || true)
+    if [[ -n $raw && $raw == "$RM_CORE_BASE"/* && -x $raw/xray ]]; then
+      core_path=$(jq -Rn --arg v "$raw" '$v')
+      core_version=$(jq -Rn --arg v "$(basename "$raw")" '$v')
+    fi
+  fi
+
+  jq -n     --argjson current_path "$current_path" --argjson current_version "$current_version"     --arg bin_status "$bin_status" --arg key_status "$key_status" --argjson key_sha "$key_sha"     --argjson state_present "$state_present" --argjson state_valid "$state_valid"     --argjson previous_path "$previous_path" --argjson previous_version "$previous_version"     --argjson core_path "$core_path" --argjson core_version "$core_version"     --arg default_core "$(xray_default_version)"     '{manager:{current_path:$current_path,current_version:$current_version,command_link:$bin_status,
+               trusted_release_key:{status:$key_status,sha256:$key_sha},
+               previous_path:$previous_path,previous_version:$previous_version},
+      state:{present:$state_present,valid:$state_valid},
+      core:{current_path:$core_path,current_version:$core_version,default_compatible_version:$default_core},
+      remote_check:{status:"not_performed"},
+      note:"本状态只读取本机安装与兼容矩阵；不会联网检查更新，离线不影响本地状态查看。"}'
+}
+
+update_verify_current_manager() {
+  local current
+  current=$(update_current_managed_version_path) || return $?
+  [[ -n $current ]] || { rm_error '当前没有受管管理器版本'; return "$RM_RC_PRECONDITION"; }
+  update_validate_bin_link "$current" || return $?
+  update_validate_public_key "$RM_TRUSTED_RELEASE_KEY" || return $?
+  update_verify_release_dir "$current" "$RM_TRUSTED_RELEASE_KEY" || return $?
+  update_run_release_smoke "$current" || return $?
+  jq -n --arg path "$current" --arg version "$(jq -r .version "$current/MANIFEST.json")"     '{status:"verified",current_path:$path,version:$version,network_used:false}'
 }
 
 update_core_to() {

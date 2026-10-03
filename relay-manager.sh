@@ -227,7 +227,7 @@ fail2ban_cmd() {
 
 backup_cmd() { local sub=${1:-list}; shift || true; case "$sub" in list) backup_list;; create) mutation_guard; backup_create "${1:-config}";; restore) mutation_guard; backup_restore_local "$1";; restore-nodes) mutation_guard; backup_restore_nodes_only "$1";; *) return "$RM_RC_PRECONDITION";; esac; }
 
-update_cmd() { local sub=${1:-status}; shift || true; case "$sub" in core) mutation_guard; update_core_to "$1";; manager-package) mutation_guard; update_install_manager_package "$1" "${2:-}" "${3:-}";; rollback-manager) mutation_guard; update_manager_rollback;; status) jq '{default_core_version,core:.core.xray,client_profiles}' "$RM_COMPAT_FILE";; *) return "$RM_RC_PRECONDITION";; esac; }
+update_cmd() { local sub=${1:-status}; shift || true; case "$sub" in core) mutation_guard; update_core_to "$1";; manager-package) mutation_guard; [[ -n ${1:-} && -n ${2:-} ]] || return "$RM_RC_PRECONDITION"; update_install_manager_package "$1" "$2" "${3:-}";; rollback-manager) mutation_guard; update_manager_rollback;; verify-manager) update_verify_current_manager;; status) update_status_json;; *) return "$RM_RC_PRECONDITION";; esac; }
 
 remove_cmd() { local sub=${1:-manager}; shift || true; case "$sub" in manager) mutation_guard; rm_confirm '确认删除受管节点与管理器？SSH/UFW/Fail2ban 安全设置默认保留。' || return "$RM_RC_CANCEL"; remove_all_nodes_and_manager false false;; backups) mutation_guard; remove_backups_only;; exports) mutation_guard; remove_exports_only;; *) return "$RM_RC_PRECONDITION";; esac; }
 
@@ -291,7 +291,7 @@ AsterNode CLI
                     root-publickey-only|root-disable ADMIN_USER|confirm [TX]|rollback-pending|recovery-guide [TX]
   relay-manager fail2ban status|health|recommend [USER]|install|apply [IGNORE_IP_OR_CIDR...]|disable|banned|unban IP
   relay-manager backup list|create [config|upgrade]|restore ID|restore-nodes ID
-  relay-manager update status|core VERSION|manager-package FILE [SHA256] [PUBLIC_KEY]|rollback-manager
+  relay-manager update status|verify-manager|core VERSION|manager-package FILE SHA256 [PUBLIC_KEY]|rollback-manager
   relay-manager remove manager|backups|exports
   relay-manager reconcile            systemd 维护任务：恢复未完成事务并撤销过期 UUID 轮换
 

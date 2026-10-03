@@ -151,4 +151,19 @@ if [[ -s $mal ]]; then
   assert_eq 10 "$rc" 'path traversal archive was accepted'
 fi
 
+# Package install must require an outer fixed digest.
+rc=0
+update_install_manager_package "$package" "" "$built_pub" >/dev/null 2>&1 || rc=$?
+assert_eq 10 "$rc" 'manager package install accepted a missing outer digest'
+
+status=$(update_status_json)
+assert_json "$status" '
+  .manager.current_version=="'"$version"'" and
+  .manager.command_link=="managed" and
+  .manager.trusted_release_key.status=="present" and
+  .remote_check.status=="not_performed"
+'
+verified=$(update_verify_current_manager)
+assert_json "$verified" '.status=="verified" and .version=="'"$version"'" and .network_used==false'
+
 pass 'Stage D signed package build, manifest/signature verification, trust pinning and idempotent install'
