@@ -8,12 +8,15 @@ export RM_ROOT="$root" RM_TEST_MODE=1
 source "$PROJECT_DIR/lib/target.sh"
 
 assert_json "$(cat "$RM_TARGETS_FILE")" '
-  .schema_version==3 and
+  .schema_version==4 and
   (.candidates|length)>=10 and
   all(.candidates[]; (.target|type)=="string" and (.sni|type)=="string" and (.recommendable|type)=="boolean") and
   (any(.candidates[]; .sni=="www.microsoft.com")) and
   (any(.candidates[]; .sni=="dl.google.com" and .official_reference==true and .recommendable==true)) and
   (any(.candidates[]; .sni=="www.cloudflare.com" and .recommendable==false and .risk_class=="shared-cdn-forwarding")) and
+  (any(.candidates[]; .sni=="www.bing.com" and .recommendable==false and .risk_class=="shared-edge-known")) and
+  (any(.shared_edge_suffixes[]; .=="edgekey.net")) and
+  (any(.shared_edge_suffixes[]; .=="akamaiedge.net")) and
   (all(.candidates[]; (.sni|ascii_downcase|contains("apple")|not)))
 '
 
@@ -60,6 +63,12 @@ printf 'CONNECTED(00000003)\nNew, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384\nVer
 printf '\0binary-tail\n'
 SH
 chmod +x "$fakebin/openssl"
+cat >"$fakebin/dig" <<'SH'
+#!/usr/bin/env bash
+# Safe fixture: no CNAME and no PTR records.
+exit 0
+SH
+chmod +x "$fakebin/dig"
 
 PATH_ORIG=$PATH
 PATH="$fakebin:$PATH"
@@ -78,6 +87,8 @@ assert_json "$probe" '
   .checks.repeated_handshake==true and
   .checks.http_redirect==false and
   .abuse_risk.status=="low" and
+  .abuse_risk.shared_edge.status=="low" and
+  .abuse_risk.cross_sni.status=="low" and
   .recommendation_eligible==true
 '
 grep -F 'ignored null byte' "$nul_stderr" >/dev/null && fail 'Target probe still feeds NUL bytes through command substitution'

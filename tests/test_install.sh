@@ -22,7 +22,8 @@ assert_eq "$count1" "$count2" 'reinstall created an extra version directory'
 assert_eq "$sha1" "$sha2" 'reinstall rewrote the installed version unexpectedly'
 [[ ! -e "$root/etc/relay-manager/state.json" ]] || fail 'reinstall created managed state'
 
-grep -F 'tar fuser' "$PROJECT_DIR/install.sh" >/dev/null || fail 'installer does not require fuser'
+grep -F 'tar fuser dig' "$PROJECT_DIR/install.sh" >/dev/null || fail 'installer does not require fuser/dig'
 grep -F 'fuser) pkg=psmisc' "$PROJECT_DIR/install.sh" >/dev/null || fail 'installer does not map fuser to psmisc'
+grep -F 'dig) pkg=dnsutils' "$PROJECT_DIR/install.sh" >/dev/null || fail 'installer does not map dig to dnsutils'
 
 pass 'Stage-A install entry idempotency, dependency coverage and read-only status'

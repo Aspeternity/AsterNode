@@ -63,14 +63,15 @@ vr_random_range() {
 
 vr_generate_fallback_limits() {
   local ua ur ub da dr db
-  # Randomized per node and persisted in state. Ranges intentionally vary around
-  # moderate limits to reduce abuse without using a fixed one-click fingerprint.
-  ua=$(vr_random_range 2097152 6291456) || return $?
-  ur=$(vr_random_range 262144 786432) || return $?
-  ub=$(vr_random_range 1048576 3145728) || return $?
-  da=$(vr_random_range 2097152 6291456) || return $?
-  dr=$(vr_random_range 393216 1048576) || return $?
-  db=$(vr_random_range 1572864 4194304) || return $?
+  # Randomized per node and persisted in state. Keep the unthrottled window
+  # small enough to limit reconnect-based fallback abuse, while avoiding one
+  # fixed one-click signature.
+  ua=$(vr_random_range 131072 393216) || return $?
+  ur=$(vr_random_range 98304 262144) || return $?
+  ub=$(vr_random_range 262144 786432) || return $?
+  da=$(vr_random_range 262144 786432) || return $?
+  dr=$(vr_random_range 131072 393216) || return $?
+  db=$(vr_random_range 393216 1048576) || return $?
 
   jq -n --argjson ua "$ua" --argjson ur "$ur" --argjson ub "$ub" \
     --argjson da "$da" --argjson dr "$dr" --argjson db "$db" '{
@@ -125,9 +126,9 @@ vr_validate() {
     def uint_between($min;$max):
       (type=="number") and (.==floor) and (. >= $min) and (. <= $max);
     def limit_ok:
-      (.after_bytes | uint_between(1048576;16777216)) and
-      (.bytes_per_sec | uint_between(131072;2097152)) and
-      (.burst_bytes_per_sec | uint_between(262144;8388608)) and
+      (.after_bytes | uint_between(65536;1048576)) and
+      (.bytes_per_sec | uint_between(65536;524288)) and
+      (.burst_bytes_per_sec | uint_between(131072;1572864)) and
       (.burst_bytes_per_sec >= .bytes_per_sec);
     (.node.reality.fallback_limits|type)=="object" and
     (.node.reality.fallback_limits.upload|limit_ok) and

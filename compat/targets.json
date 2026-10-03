@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "updated": "2026-10-03",
   "candidates": [
     {
@@ -53,10 +53,10 @@
     {
       "target": "www.bing.com:443",
       "sni": "www.bing.com",
-      "recommendable": true,
+      "recommendable": false,
       "official_reference": false,
-      "risk_class": "standard",
-      "note": "通用候选；必须在当前 VPS 实测"
+      "risk_class": "shared-edge-known",
+      "note": "真实 VPS 已观测到 trafficmanager.net → edgekey.net → akamaiedge.net 共享边缘链；默认不参与推荐"
     },
     {
       "target": "www.debian.org:443",
@@ -91,5 +91,28 @@
       "note": "仅保留作对照候选；XTLS 文档警告 Cloudflare 等特殊 CDN Target 可能形成未认证流量转发，因此不参与自动推荐"
     }
   ],
-  "policy": "候选只用于当前 VPS 的受控探测。最低推荐条件为 DNS/TCP/TLS1.3/证书/H2/重复握手通过、目标域名不发生 HTTP 重定向，且对当前解析 IP 的跨 SNI 安全探测为 low；high 或 unverified 一律不推荐。HTTP 非 200 本身不自动判坏。recommended 只从 recommendable=true 且 recommendation_eligible=true 的候选中按实测握手延迟最低选择，official_reference 仅在相同延迟时作为次级排序；推荐不会自动写入节点配置。受管 REALITY 节点另强制使用每节点随机化 fallback 限速作为第二道防偷跑保护。"
+  "policy": "候选只用于当前 VPS 的受控探测。最低推荐条件为 DNS/TCP/TLS1.3/证书/H2/重复握手通过、目标域名不发生 HTTP 重定向，且 CNAME/PTR 不命中已知共享 CDN/边缘后缀、跨 SNI 安全探测也为 low；任一 high 或 unverified 一律 fail-closed。HTTP 非 200 本身不自动判坏。recommended 只从 recommendable=true 且 recommendation_eligible=true 的候选中按实测握手延迟最低选择；推荐不会自动写入节点配置。受管 REALITY 节点另强制使用每节点随机化且收紧的 fallback 限速作为第二道防偷跑保护。",
+  "shared_edge_suffixes": [
+    "edgekey.net",
+    "akamaiedge.net",
+    "edgesuite.net",
+    "akadns.net",
+    "akamaized.net",
+    "akamaitechnologies.com",
+    "cloudfront.net",
+    "cloudflare.net",
+    "cloudflare.com",
+    "fastly.net",
+    "fastlylb.net",
+    "azureedge.net",
+    "azurefd.net",
+    "trafficmanager.net",
+    "msedge.net",
+    "cdn77.org",
+    "hwcdn.net",
+    "stackpathdns.com",
+    "stackpathcdn.com",
+    "edgecastcdn.net",
+    "cachefly.net"
+  ]
 }

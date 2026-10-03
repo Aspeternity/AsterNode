@@ -23,8 +23,8 @@ assert_json "$server" '
   .inbounds[0].streamSettings.network=="raw" and
   .inbounds[0].streamSettings.security=="reality" and
   .inbounds[0].streamSettings.realitySettings.target=="www.microsoft.com:443" and
-  .inbounds[0].streamSettings.realitySettings.limitFallbackUpload.bytesPerSec==524288 and
-  .inbounds[0].streamSettings.realitySettings.limitFallbackDownload.bytesPerSec==786432 and
+  .inbounds[0].streamSettings.realitySettings.limitFallbackUpload.bytesPerSec==196608 and
+  .inbounds[0].streamSettings.realitySettings.limitFallbackDownload.bytesPerSec==262144 and
   (.inbounds[0].settings.clients|length)==2
 '
 assert_json "$client" '
@@ -82,12 +82,12 @@ assert_json "$kp" '.private_key|length==43'
 assert_json "$kp" '.password|length==43'
 limits=$("$vr" generate_fallback_limits)
 assert_json "$limits" '
-  .upload.after_bytes>=2097152 and .upload.after_bytes<=6291456 and
-  .upload.bytes_per_sec>=262144 and .upload.bytes_per_sec<=786432 and
-  .upload.burst_bytes_per_sec>=1048576 and
-  .download.after_bytes>=2097152 and .download.after_bytes<=6291456 and
-  .download.bytes_per_sec>=393216 and .download.bytes_per_sec<=1048576 and
-  .download.burst_bytes_per_sec>=1572864
+  .upload.after_bytes>=131072 and .upload.after_bytes<=393216 and
+  .upload.bytes_per_sec>=98304 and .upload.bytes_per_sec<=262144 and
+  .upload.burst_bytes_per_sec>=262144 and .upload.burst_bytes_per_sec<=786432 and
+  .download.after_bytes>=262144 and .download.after_bytes<=786432 and
+  .download.bytes_per_sec>=131072 and .download.bytes_per_sec<=393216 and
+  .download.burst_bytes_per_sec>=393216 and .download.burst_bytes_per_sec<=1048576
 '
 
 pass 'Stage B VLESS RAW/TCP REALITY rendering, validation, URI, credentials and randomized fallback limits'

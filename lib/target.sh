@@ -23,6 +23,93 @@ target_resolve_host() {
   getent ahosts "$host" 2>/dev/null | awk 'NR==1{print $1;exit}'
 }
 
+target_shared_edge_suffix() {
+  local name=${1%.}
+  [[ -r $RM_TARGETS_FILE ]] || return 1
+  jq -r --arg n "${name,,}" '
+    .shared_edge_suffixes[]? |
+    select($n == . or ($n|endswith("." + .)))
+  ' "$RM_TARGETS_FILE" 2>/dev/null | head -n1
+}
+
+target_dns_shared_edge_json() {
+  local host=$1 resolved=$2 current answer next ptr rc suffix depth=0
+  local query_failed=false chain='[]' ptrs='[]' matches='[]'
+
+  if ! rm_have dig; then
+    jq -n '{status:"unverified",cname_chain:[],ptr_names:[],matches:[],
+      reason:"缺少 dig，无法验证 CNAME/PTR 共享 CDN/边缘链路"}'
+    return 0
+  fi
+
+  current=${host%.}
+  if ! rm_normalize_ip_or_cidr "$current" >/dev/null 2>&1; then
+    while ((depth < 8)); do
+      set +e
+      answer=$(dig +time=2 +tries=1 +noall +answer CNAME "$current" 2>/dev/null)
+      rc=$?
+      set -e
+      if ((rc != 0)); then
+        query_failed=true
+        break
+      fi
+      next=$(awk 'toupper($4)=="CNAME"{print $5;exit}' <<<"$answer")
+      [[ -n $next ]] || break
+      next=${next%.}
+      chain=$(jq -c --arg v "$next" '. + [$v]' <<<"$chain")
+      suffix=$(target_shared_edge_suffix "$next" || true)
+      if [[ -n $suffix ]]; then
+        matches=$(jq -c --arg name "$next" --arg suffix "$suffix"           '. + [{source:"cname",name:$name,suffix:$suffix}]' <<<"$matches")
+      fi
+      [[ ${next,,} == ${current,,} ]] && { query_failed=true; break; }
+      current=$next
+      depth=$((depth+1))
+    done
+    ((depth >= 8)) && query_failed=true
+  fi
+
+  suffix=$(target_shared_edge_suffix "$host" || true)
+  if [[ -n $suffix ]]; then
+    matches=$(jq -c --arg name "${host%.}" --arg suffix "$suffix"       '. + [{source:"target-host",name:$name,suffix:$suffix}]' <<<"$matches")
+  fi
+
+  set +e
+  ptr=$(dig +time=2 +tries=1 +short -x "$resolved" 2>/dev/null)
+  rc=$?
+  set -e
+  if ((rc != 0)); then
+    query_failed=true
+  else
+    local p
+    while IFS= read -r p; do
+      [[ -n $p ]] || continue
+      p=${p%.}
+      ptrs=$(jq -c --arg v "$p" '. + [$v]' <<<"$ptrs")
+      suffix=$(target_shared_edge_suffix "$p" || true)
+      if [[ -n $suffix ]]; then
+        matches=$(jq -c --arg name "$p" --arg suffix "$suffix"           '. + [{source:"ptr",name:$name,suffix:$suffix}]' <<<"$matches")
+      fi
+    done <<<"$ptr"
+  fi
+
+  if jq -e 'length>0' <<<"$matches" >/dev/null; then
+    jq -n --argjson chain "$chain" --argjson ptrs "$ptrs" --argjson matches "$matches" '{
+      status:"high",cname_chain:$chain,ptr_names:$ptrs,matches:$matches,
+      reason:"CNAME/PTR 命中已知共享 CDN/边缘网络特征，拒绝作为 REALITY 推荐 Target"
+    }'
+  elif [[ $query_failed == true ]]; then
+    jq -n --argjson chain "$chain" --argjson ptrs "$ptrs" --argjson matches "$matches" '{
+      status:"unverified",cname_chain:$chain,ptr_names:$ptrs,matches:$matches,
+      reason:"DNS CNAME/PTR 安全检查未完整完成，按 fail-closed 处理"
+    }'
+  else
+    jq -n --argjson chain "$chain" --argjson ptrs "$ptrs" --argjson matches "$matches" '{
+      status:"low",cname_chain:$chain,ptr_names:$ptrs,matches:$matches,
+      reason:"本次未发现已知共享 CDN/边缘 CNAME/PTR 特征"
+    }'
+  fi
+}
+
 target_catalog_policy_json() {
   local target=$1 sni=$2
   if [[ -r $RM_TARGETS_FILE ]]; then
@@ -48,14 +135,14 @@ target_catalog_policy_json() {
 target_cross_sni_risk_json() {
   local resolved=$1 port=$2 original_sni=$3 tmpdir=$4 connect probe log rc
   local accepted=false timed_out=false tls13 h2 results='[]' count=0
-  local -a probes=(www.cloudflare.com www.microsoft.com www.google.com)
+  local -a probes=(www.cloudflare.com www.microsoft.com www.google.com www.amazon.com www.youtube.com www.wikipedia.org)
 
   connect=$resolved
   [[ $resolved == *:* ]] && connect="[$resolved]"
 
   for probe in "${probes[@]}"; do
     [[ $probe == "$original_sni" ]] && continue
-    ((count >= 2)) && break
+    ((count >= 4)) && break
     log="$tmpdir/cross-sni-$count.log"
 
     set +e
@@ -97,14 +184,14 @@ target_cross_sni_risk_json() {
       status:"low",
       cross_sni_valid_hostname:false,
       probes:$probes,
-      reason:"对两个无关 SNI 的有效主机名握手均未通过；本次未发现共享边缘跨 SNI 转发证据"
+      reason:"对多个无关 SNI 的有效主机名握手均未通过；本次未发现共享边缘跨 SNI 转发证据"
     }'
   fi
 }
 
 target_probe() {
   local target=$1 sni=$2 host port resolved connect start end ms tmpdir first_log second_log hdrfile
-  local http_status='unverified' redirect='' redirected=false catalog abuse recommendation_eligible=false recommendation_reason=''
+  local http_status='unverified' redirect='' redirected=false catalog abuse shared_edge cross_sni recommendation_eligible=false recommendation_reason=''
   local risk_note='REALITY 未认证流量可能表现为转发到 Target；CDN/共享目标需单独评估滥用与来源限制。本工具不会因 Target 探测自动开放额外端口。'
 
   rm_split_host_port "$target" >/dev/null 2>&1 || {
@@ -202,16 +289,39 @@ target_probe() {
   fi
 
   catalog=$(target_catalog_policy_json "$target" "$sni")
-  abuse=$(jq -nc '{status:"unverified",cross_sni_valid_hostname:null,probes:[],reason:"基础 Target 条件未通过，未执行跨 SNI 安全探测"}')
+  shared_edge=$(jq -nc '{status:"unverified",cname_chain:[],ptr_names:[],matches:[],reason:"基础 Target 条件未通过，未执行共享边缘 DNS 检查"}')
+  cross_sni=$(jq -nc '{status:"unverified",cross_sni_valid_hostname:null,probes:[],reason:"基础 Target 条件未通过，未执行跨 SNI 安全探测"}')
   if [[ $status == suitable_measured ]]; then
-    abuse=$(target_cross_sni_risk_json "$resolved" "$port" "$sni" "$tmpdir")
+    shared_edge=$(target_dns_shared_edge_json "$host" "$resolved")
+    if jq -e '.status!="high"' <<<"$shared_edge" >/dev/null; then
+      cross_sni=$(target_cross_sni_risk_json "$resolved" "$port" "$sni" "$tmpdir")
+    else
+      cross_sni=$(jq -nc '{status:"skipped",cross_sni_valid_hostname:null,probes:[],
+        reason:"CNAME/PTR 已命中共享边缘高风险，跳过额外跨 SNI 探测"}')
+    fi
   fi
+
+  abuse=$(jq -n --argjson edge "$shared_edge" --argjson cross "$cross_sni" '
+    if $edge.status=="high" or $cross.status=="high" then
+      {status:"high",shared_edge:$edge,cross_sni:$cross,
+       reason:(if $edge.status=="high" then $edge.reason else $cross.reason end)}
+    elif $edge.status=="unverified" or $cross.status=="unverified" then
+      {status:"unverified",shared_edge:$edge,cross_sni:$cross,
+       reason:"共享边缘或跨 SNI 安全检查存在未验证项，按 fail-closed 处理"}
+    elif $edge.status=="low" and ($cross.status=="low" or $cross.status=="skipped") then
+      {status:"low",shared_edge:$edge,cross_sni:$cross,
+       reason:"CNAME/PTR 共享边缘检查与跨 SNI 检查均未发现高风险证据"}
+    else
+      {status:"unverified",shared_edge:$edge,cross_sni:$cross,
+       reason:"安全检查状态组合无法确认，按 fail-closed 处理"}
+    end
+  ')
 
   if [[ $status == suitable_measured ]] &&
      jq -e '.status=="low"' <<<"$abuse" >/dev/null &&
      jq -e '.recommendable==true' <<<"$catalog" >/dev/null; then
     recommendation_eligible=true
-    recommendation_reason='网络条件与跨 SNI 安全门槛均通过'
+    recommendation_reason='网络条件、CNAME/PTR 共享边缘检查与跨 SNI 安全门槛均通过'
   elif jq -e '.recommendable==false' <<<"$catalog" >/dev/null; then
     recommendation_reason='候选目录将此 Target 标记为不参与推荐'
   elif [[ $status == suitable_measured ]]; then
@@ -245,7 +355,7 @@ target_probe() {
       catalog_policy:$catalog,
       recommendation_eligible:$eligible,
       recommendation_reason:$recommendation_reason,
-      note:"HTTP 非 200 不自动等于 REALITY 不可用；HTTP 重定向、共享边缘跨 SNI 风险或未验证风险均不进入推荐结果。结果仅代表当前 VPS 本次实测。",
+      note:"HTTP 非 200 不自动等于 REALITY 不可用；HTTP 重定向、共享 CDN/边缘 CNAME/PTR、跨 SNI 风险或未验证风险均不进入推荐结果。结果仅代表当前 VPS 本次实测。",
       risk_note:$risk,
       probe_policy:{handshake_attempts:$attempts,tls_timeout_seconds:$tls_timeout,
         http_timeout_seconds:$http_timeout}}'
@@ -299,7 +409,7 @@ target_probe_candidates() {
       (.[0] // null) |
       if .==null then null else
         {target,sni,resolved_address,latency_ms,abuse_risk,candidate,
-         selection_reason:"通过动态跨 SNI 滥用风险门槛的 recommendable suitable_measured 中实测握手延迟最低；同延迟时优先官方参考候选"}
+         selection_reason:"通过 CNAME/PTR 共享边缘与跨 SNI 双重防偷跑门槛的候选中实测握手延迟最低；同延迟时优先官方参考候选"}
       end' <<<"$results")
   policy=$(jq -r .policy "$RM_TARGETS_FILE")
 
@@ -313,7 +423,7 @@ target_probe_candidates() {
       policy:$policy,
       auto_selected:false,
       auto_applied:false,
-      selection_basis:"只在 recommendable=true、无 HTTP 重定向、动态跨 SNI 滥用风险为 low 且 suitable_measured 的候选中按当前 VPS 实测握手延迟选择；high/unverified 均拒绝推荐，也不会自动写入节点配置",
+      selection_basis:"只在 recommendable=true、无 HTTP 重定向、CNAME/PTR 共享边缘与跨 SNI 综合 abuse_risk=low 且 suitable_measured 的候选中按当前 VPS 实测握手延迟选择；high/unverified 均 fail-closed，且不会自动写入节点配置",
       probe_policy:{max_parallel:$max_parallel,handshake_attempts:$attempts,tls_timeout_seconds:$timeout}}'
   rm -rf "$tmpdir"
 }

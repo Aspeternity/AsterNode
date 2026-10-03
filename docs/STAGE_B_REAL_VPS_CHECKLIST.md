@@ -62,10 +62,12 @@ tested_at:
 在落地 VPS 上对候选与手工 Target 运行探测，记录 DNS/TCP/TLS1.3/证书/H2/重复握手/延迟。
 
 - HTTP 非 200 不自动判坏；HTTP 重定向不进入推荐结果。
-- 内置候选探测必须输出 `abuse_risk` 与 `recommended`：除网络条件外，还要对当前解析 IP 使用无关 SNI 做有效主机名握手测试；`high` 或 `unverified` 均不得进入推荐。
-- 只从 `recommendable=true`、`recommendation_eligible=true` 且 `suitable_measured` 的结果中按当前 VPS 实测握手延迟选择，同延迟时才优先官方参考候选。
-- `recommended` 只是本机实测推荐，不自动替换或写入节点 Target；真实节点 create/replace 对新 Target 还必须重新执行安全门槛，禁止绕过。
-- 受管 REALITY 入站必须带持久化的随机 `limitFallbackUpload/Download`，作为跨 SNI 检测之外的第二道防偷跑保护；限速参数不得所有安装使用同一固定值。
+- 内置候选探测必须输出 `abuse_risk` 与 `recommended`：先解析完整 CNAME 链和当前 IP PTR，命中 Akamai / CloudFront / Cloudflare / Fastly / Azure Edge 等已知共享 CDN/边缘后缀即为 `high`；DNS 安全检查无法完成则为 `unverified`，两者均 fail-closed。
+- CNAME/PTR 未命中后，再对当前解析 IP 使用多个无关 SNI 做有效主机名握手测试；任一无关 SNI 能完成有效 TLS 1.3 主机名验证，同样判 `high`。
+- 只从 `recommendable=true`、`recommendation_eligible=true`、综合 `abuse_risk=low` 且 `suitable_measured` 的结果中按当前 VPS 实测握手延迟选择，同延迟时才优先官方参考候选。
+- `recommended` 只是本机实测推荐，不自动替换或写入节点 Target；真实节点 create/replace 对新 Target 还必须重新执行同一安全门槛，禁止绕过。
+- 受管 REALITY 入站必须带持久化、随机且收紧的 `limitFallbackUpload/Download`。未限速窗口控制在几百 KiB 量级，降低攻击者通过反复新建 fallback 连接偷跑带宽的收益；参数仍随机化，避免所有安装使用同一固定指纹。
+- Target 安全探测依赖 `dig`；安装器在 Debian/Ubuntu 上自动通过 `dnsutils` 补齐。缺少或查询失败时不得降级为安全。
 - Target 不得指回本节点监听端点形成循环。
 - Cloudflare 等共享 CDN 候选可以保留作对照，但默认不参与推荐，并需记录未认证回落转发的滥用风险判断。
 

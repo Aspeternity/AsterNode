@@ -66,8 +66,8 @@ stage_b_base_spec() {
         password:"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
         short_id:"0011223344556677",
         fallback_limits:{
-          upload:{after_bytes:4194304,bytes_per_sec:524288,burst_bytes_per_sec:2097152},
-          download:{after_bytes:5242880,bytes_per_sec:786432,burst_bytes_per_sec:3145728}
+          upload:{after_bytes:262144,bytes_per_sec:196608,burst_bytes_per_sec:524288},
+          download:{after_bytes:524288,bytes_per_sec:262144,burst_bytes_per_sec:786432}
         }
       }
     },
