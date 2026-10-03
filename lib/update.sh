@@ -239,6 +239,43 @@ update_require_space() {
   }
 }
 
+update_current_managed_version_path() {
+  local resolved
+  if [[ ! -e $RM_MANAGER_CURRENT && ! -L $RM_MANAGER_CURRENT ]]; then
+    printf '\n'
+    return 0
+  fi
+  [[ -L $RM_MANAGER_CURRENT ]] || {
+    rm_error '当前管理器路径已存在但不是 AsterNode 受管符号链接'
+    return "$RM_RC_PRECONDITION"
+  }
+  resolved=$(readlink -f "$RM_MANAGER_CURRENT" 2>/dev/null || true)
+  [[ -n $resolved && $resolved == "$RM_VERSION_BASE"/* && -d $resolved && ! -L $resolved ]] || {
+    rm_error '当前管理器链接不在受管版本目录，拒绝自动切换'
+    return "$RM_RC_PRECONDITION"
+  }
+  printf '%s\n' "$resolved"
+}
+
+update_validate_bin_link() {
+  local expected_current=${1:-} resolved expected_bin
+  if [[ ! -e $RM_BIN_LINK && ! -L $RM_BIN_LINK ]]; then return 0; fi
+  [[ -L $RM_BIN_LINK ]] || {
+    rm_error 'relay-manager 命令路径已存在且不属于受管符号链接，拒绝覆盖'
+    return "$RM_RC_PRECONDITION"
+  }
+  resolved=$(readlink -f "$RM_BIN_LINK" 2>/dev/null || true)
+  [[ -n $expected_current ]] || {
+    rm_error '发现已有 relay-manager 命令，但没有受管 current 版本，拒绝覆盖'
+    return "$RM_RC_PRECONDITION"
+  }
+  expected_bin="$expected_current/relay-manager.sh"
+  [[ -n $resolved && $resolved == "$expected_bin" ]] || {
+    rm_error 'relay-manager 命令链接与当前受管版本不一致，拒绝覆盖'
+    return "$RM_RC_PRECONDITION"
+  }
+}
+
 update_install_manager_package() {
   local package=$1 expected_sha=${2:-} explicit_key=${3:-} verify_key top tmpdir extract root manifest version dest previous copied=false
   local required package_size root_size current_after state_rc=0
@@ -276,6 +313,9 @@ update_install_manager_package() {
   fi
 
   install -d -m 0755 "$RM_VERSION_BASE" "$(dirname "$RM_BIN_LINK")"
+  previous=$(update_current_managed_version_path) || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  update_validate_bin_link "$previous" || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+
   if [[ -e $dest ]]; then
     if [[ ! -d $dest || -L $dest ]]; then
       rm_error "版本目标已存在且类型异常: $dest"
@@ -297,13 +337,6 @@ update_install_manager_package() {
 
   if [[ ! -x $dest/tests/release_smoke.sh ]] || ! "$dest/tests/release_smoke.sh"; then
     rm_error '新管理器版本发行自检失败，未切换'
-    [[ $copied == true ]] && rm -rf "$dest"
-    rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"
-  fi
-
-  previous=$(readlink -f "$RM_MANAGER_CURRENT" 2>/dev/null || true)
-  if [[ -n $previous && $previous != "$RM_VERSION_BASE"/* ]]; then
-    rm_error '当前管理器链接不在受管版本目录，拒绝自动切换'
     [[ $copied == true ]] && rm -rf "$dest"
     rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"
   fi
@@ -355,8 +388,8 @@ update_manager_rollback() {
     rm_error '上一管理器版本自检失败'
     return "$RM_RC_PRECONDITION"
   }
-  current=$(readlink -f "$RM_MANAGER_CURRENT" 2>/dev/null || true)
-  [[ -z $current || $current == "$RM_VERSION_BASE"/* ]] || return "$RM_RC_PRECONDITION"
+  current=$(update_current_managed_version_path) || return $?
+  update_validate_bin_link "$current" || return $?
 
   ln -sfn "$prev_real" "$RM_MANAGER_CURRENT.tmp"; mv -Tf "$RM_MANAGER_CURRENT.tmp" "$RM_MANAGER_CURRENT"
   ln -sfn "$RM_MANAGER_CURRENT/relay-manager.sh" "$RM_BIN_LINK.tmp"; mv -Tf "$RM_BIN_LINK.tmp" "$RM_BIN_LINK"

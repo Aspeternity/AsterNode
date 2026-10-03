@@ -38,6 +38,25 @@ assert_eq "$root/usr/local/lib/relay-manager/versions/$version/relay-manager.sh"
 assert_file_mode "$root/etc/relay-manager/trusted-release.pem" 644
 assert_file_mode "$root/usr/local/lib/relay-manager/versions/$version/MANIFEST.json" 644
 
+# Managed-link inspection must distinguish a genuinely absent first-install path from readlink -f canonicalization.
+rm -f "$root/usr/local/bin/relay-manager" "$root/usr/local/lib/relay-manager/current"
+assert_eq '' "$(update_current_managed_version_path)" 'absent current path was misdetected as an unmanaged installation'
+update_validate_bin_link ''
+ln -s "$root/usr/local/lib/relay-manager/versions/$version" "$root/usr/local/lib/relay-manager/current"
+ln -s "$root/usr/local/lib/relay-manager/current/relay-manager.sh" "$root/usr/local/bin/relay-manager"
+assert_eq "$root/usr/local/lib/relay-manager/versions/$version" "$(update_current_managed_version_path)" 'managed current link was not resolved'
+update_validate_bin_link "$root/usr/local/lib/relay-manager/versions/$version"
+
+# A foreign command path must never be overwritten.
+rm -f "$root/usr/local/bin/relay-manager"
+printf '#!/bin/sh\n' >"$root/usr/local/bin/relay-manager"
+chmod 0755 "$root/usr/local/bin/relay-manager"
+rc=0
+update_install_manager_package "$package" "$sha" "$built_pub" >/dev/null 2>&1 || rc=$?
+assert_eq 10 "$rc" 'foreign relay-manager command path was overwritten'
+rm -f "$root/usr/local/bin/relay-manager"
+ln -s "$root/usr/local/lib/relay-manager/current/relay-manager.sh" "$root/usr/local/bin/relay-manager"
+
 # Same verified release is idempotent and does not create a duplicate version.
 update_install_manager_package "$package" "$sha" "$built_pub" >/dev/null
 assert_eq 1 "$(find "$root/usr/local/lib/relay-manager/versions" -mindepth 1 -maxdepth 1 -type d | wc -l)" 'idempotent install created another version'
