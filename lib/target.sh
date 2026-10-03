@@ -298,7 +298,7 @@ target_probe_candidates() {
     ] | sort_by(._selection_rank) |
       (.[0] // null) |
       if .==null then null else
-        {target,sni,resolved_address,latency_ms,candidate,
+        {target,sni,resolved_address,latency_ms,abuse_risk,candidate,
          selection_reason:"通过动态跨 SNI 滥用风险门槛的 recommendable suitable_measured 中实测握手延迟最低；同延迟时优先官方参考候选"}
       end' <<<"$results")
   policy=$(jq -r .policy "$RM_TARGETS_FILE")
