@@ -15,7 +15,7 @@ export RM_UFW_ADDED_FILE="$root/ufw-added.txt"
 export RM_UFW_RAW_FILE="$root/ufw-raw.txt"
 export RM_UFW_FRAMEWORK_MODIFIED=false
 
-mkdir -p "$root/fakebin" "$root/etc/ssh/sshd_config.d" "$root/etc/fail2ban/jail.d"   "$root/etc/fail2ban/action.d" "$root/var/log" "$root/etc/default"
+mkdir -p "$root/fakebin" "$root/etc/ssh/sshd_config.d" "$root/etc/fail2ban/jail.d"   "$root/etc/fail2ban/action.d" "$root/etc/logrotate.d" "$root/var/log" "$root/etc/default"
 export RM_SSH_EFFECTIVE_FILE="$root/sshd-effective.txt"
 
 cat >"$RM_SSH_EFFECTIVE_FILE" <<'EOF'
@@ -58,6 +58,9 @@ EOF
 : >"$RM_SYSTEMCTL_LOG"
 : >"$root/etc/fail2ban/action.d/ufw.conf"
 : >"$root/var/log/auth.log"
+cat >"$root/etc/logrotate.d/fail2ban" <<'EOF'
+/var/log/fail2ban.log { rotate 4 }
+EOF
 
 source "$PROJECT_DIR/lib/fail2ban.sh"
 state_init
@@ -93,7 +96,12 @@ assert_eq 10 "$rc" 'existing administrator-managed sshd jail was overwritten'
 rm -f "$root/etc/fail2ban/jail.local"
 
 applied=$(f2b_apply_ssh_jail 203.0.113.5)
-assert_json "$applied" '.status=="applied" and .jail=="sshd" and .backend.backend=="polling"'
+assert_json "$applied" '
+  .status=="applied" and .jail=="sshd" and .backend.backend=="polling" and
+  .health.status=="normal" and .health.log_source.status=="ok" and
+  .health.growth_policy.managed_jail.maxmatches==10 and
+  .health.growth_policy.modifies_global_database_policy==false
+'
 assert_file_mode "$root/etc/fail2ban/jail.d/relay-manager-ssh.local" 644
 grep -Fq -- '-t' "$RM_F2B_LOG" || fail 'Fail2ban candidate config was not validated'
 grep -Fq 'restart fail2ban' "$RM_SYSTEMCTL_LOG" || fail 'Fail2ban service was not restarted'
@@ -112,13 +120,27 @@ assert_json "$disabled" '.status=="managed_sshd_jail_disabled" and .other_jails_
 grep -Fq 'enabled = false' "$root/etc/fail2ban/jail.d/relay-manager-ssh.local" ||
   fail 'managed sshd jail was not disabled'
 
-# Systemd backend must not carry a file logpath.
+growth=$(f2b_growth_policy_json)
+assert_json "$growth" '
+  .managed_jail.maxmatches==10 and
+  .observed_global_database.dbpurgeage=="86400" and
+  .observed_global_database.dbmaxmatches=="10" and
+  .distro_logrotate_detected==true and
+  .modifies_global_database_policy==false
+'
+
 rm -f "$root/var/log/auth.log"
+missing_source=$(f2b_log_source_health_json)
+assert_json "$missing_source" '.status=="abnormal" and .backend=="polling"'
+
+# Systemd backend must not carry a file logpath.
 mkdir -p "$root/run/systemd/journal"
 export RM_F2B_TEST_BACKEND=systemd RM_F2B_TEST_SYSTEMD_PY=1
 syscfg="$root/systemd.local"
 f2b_render_config "$syscfg"
 grep -Fq 'backend = systemd' "$syscfg" || fail 'systemd backend not rendered'
+systemd_source=$(f2b_log_source_health_json)
+assert_json "$systemd_source" '.status=="ok" and .backend=="systemd" and .journal_query==true'
 if grep -Eq '^[[:space:]]*logpath[[:space:]]*=' "$syscfg"; then
   fail 'systemd backend incorrectly copied a logpath'
 fi

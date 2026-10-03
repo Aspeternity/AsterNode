@@ -4,6 +4,10 @@
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/ssh.sh"
 
 RM_F2B_DROPIN="$(rm_path /etc/fail2ban/jail.d/relay-manager-ssh.local)"
+RM_F2B_MAXRETRY=5
+RM_F2B_FINDTIME=10m
+RM_F2B_BANTIME=1h
+RM_F2B_MAXMATCHES=10
 
 f2b_client() {
   if [[ ${RM_TEST_MODE} == 1 ]]; then
@@ -15,6 +19,9 @@ f2b_client() {
         ;;
       get)
         if [[ ${2:-} == sshd && ${3:-} == banip ]]; then printf '%s\n' "${RM_F2B_TEST_BANNED:-}"; return 0; fi
+        if [[ ${2:-} == dbpurgeage ]]; then printf '%s\n' "${RM_F2B_TEST_DBPURGEAGE:-86400}"; return 0; fi
+        if [[ ${2:-} == dbmaxmatches ]]; then printf '%s\n' "${RM_F2B_TEST_DBMAXMATCHES:-10}"; return 0; fi
+        if [[ ${2:-} == dbfile ]]; then printf '%s\n' "${RM_F2B_TEST_DBFILE:-/var/lib/fail2ban/fail2ban.sqlite3}"; return 0; fi
         ;;
       set) return 0 ;;
     esac
@@ -80,6 +87,83 @@ f2b_backend_json() {
     return
   fi
   jq -n '{status:"unverified",backend:null,logpath:null,journalmatch_source:null,dependency:"no-supported-log-source"}'
+}
+
+f2b_log_source_health_json() {
+  local backend_json status backend logical real query_ok=false
+  backend_json=$(f2b_backend_json)
+  status=$(jq -r .status <<<"$backend_json")
+  backend=$(jq -r '.backend // empty' <<<"$backend_json")
+  if [[ $status != ok ]]; then
+    jq -n --argjson backend "$backend_json" '{status:"unverified",backend:$backend,detail:$backend,reason:"日志后端尚未达到可验证状态"}'
+    return 0
+  fi
+  case "$backend" in
+    polling)
+      logical=$(jq -r '.logpath // empty' <<<"$backend_json")
+      real=$(rm_path "$logical")
+      if [[ -f $real && ! -L $real && -r $real ]]; then
+        jq -n --arg backend "$backend" --arg path "$logical" '{status:"ok",backend:$backend,logpath:$path,readable:true}'
+      else
+        jq -n --arg backend "$backend" --arg path "$logical" '{status:"abnormal",backend:$backend,logpath:$path,readable:false,reason:"SSH 日志文件不存在、不可读或为符号链接"}'
+      fi
+      ;;
+    systemd)
+      if ! f2b_systemd_python_available; then
+        jq -n --arg backend "$backend" '{status:"unverified",backend:$backend,reason:"缺少 python-systemd journal 依赖"}'
+        return 0
+      fi
+      if [[ ${RM_TEST_MODE} == 1 ]]; then
+        [[ ${RM_F2B_TEST_JOURNAL_OK:-1} == 1 ]] && query_ok=true
+      elif rm_have journalctl && journalctl --no-pager -n 1 -u ssh.service -u sshd.service >/dev/null 2>&1; then
+        query_ok=true
+      fi
+      if [[ $query_ok == true ]]; then
+        jq -n --arg backend "$backend" '{status:"ok",backend:$backend,journal_query:true,note:"journal 查询可用；是否存在近期认证事件不作为安装成功的必要条件"}'
+      else
+        jq -n --arg backend "$backend" '{status:"abnormal",backend:$backend,journal_query:false,reason:"无法查询 SSH systemd journal"}'
+      fi
+      ;;
+    *)
+      jq -n '{status:"unverified",backend:null,reason:"未知日志后端"}'
+      ;;
+  esac
+}
+
+f2b_growth_policy_json() {
+  local purge='' maxmatches='' dbfile='' logrotate=false
+  purge=$(f2b_client get dbpurgeage 2>/dev/null || true)
+  maxmatches=$(f2b_client get dbmaxmatches 2>/dev/null || true)
+  dbfile=$(f2b_client get dbfile 2>/dev/null || true)
+  [[ -f $(rm_path /etc/logrotate.d/fail2ban) && ! -L $(rm_path /etc/logrotate.d/fail2ban) ]] && logrotate=true
+  jq -n     --argjson managed_maxmatches "$RM_F2B_MAXMATCHES"     --arg managed_findtime "$RM_F2B_FINDTIME"     --arg managed_bantime "$RM_F2B_BANTIME"     --arg purge "$purge" --arg dbmax "$maxmatches" --arg dbfile "$dbfile" --argjson logrotate "$logrotate"     '{managed_jail:{maxmatches:$managed_maxmatches,findtime:$managed_findtime,bantime:$managed_bantime},
+      observed_global_database:{dbpurgeage:(if $purge=="" then null else $purge end),dbmaxmatches:(if $dbmax=="" then null else $dbmax end),dbfile:(if $dbfile=="" then null else $dbfile end)},
+      distro_logrotate_detected:$logrotate,
+      modifies_global_database_policy:false,
+      note:"AsterNode 只限制自有 SSH jail 的 maxmatches；Fail2ban 全局数据库保留和系统日志轮转仅检测/记录，不自动改写，以免影响其他 jail。"}'
+}
+
+f2b_runtime_health_json() {
+  local installed=false service=false config=false jail=false source growth status
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    [[ ${RM_F2B_TEST_INSTALLED:-1} == 1 ]] && installed=true
+    [[ ${RM_F2B_TEST_ACTIVE:-1} == 1 ]] && service=true
+  else
+    rm_have fail2ban-client && installed=true
+    systemctl is-active --quiet fail2ban 2>/dev/null && service=true
+  fi
+  if [[ $installed == true ]] && f2b_client -t >/dev/null 2>&1; then config=true; fi
+  if [[ $installed == true ]] && f2b_client status sshd >/dev/null 2>&1; then jail=true; fi
+  source=$(f2b_log_source_health_json)
+  growth=$(f2b_growth_policy_json)
+  if [[ $installed == true && $service == true && $config == true && $jail == true && $(jq -r .status <<<"$source") == ok ]]; then
+    status=normal
+  elif [[ $(jq -r .status <<<"$source") == unverified ]]; then
+    status=unverified
+  else
+    status=abnormal
+  fi
+  jq -n --arg status "$status" --argjson installed "$installed" --argjson service "$service"     --argjson config "$config" --argjson jail "$jail" --argjson source "$source" --argjson growth "$growth"     '{status:$status,installed:$installed,service_active:$service,config_valid:$config,sshd_jail_active:$jail,log_source:$source,growth_policy:$growth}'
 }
 
 f2b_recommendation_json() {
@@ -181,10 +265,10 @@ f2b_render_config() {
     if [[ $backend == polling ]]; then printf 'logpath = %s\n' "$logpath"; fi
     [[ -n $action ]] && printf '%s\n' "$action"
     printf 'ignoreip = %s\n' "$(jq -r 'join(" ")' <<<"$ignore_json")"
-    printf 'maxretry = 5\n'
-    printf 'findtime = 10m\n'
-    printf 'bantime = 1h\n'
-    printf 'maxmatches = 10\n'
+    printf 'maxretry = %s\n' "$RM_F2B_MAXRETRY"
+    printf 'findtime = %s\n' "$RM_F2B_FINDTIME"
+    printf 'bantime = %s\n' "$RM_F2B_BANTIME"
+    printf 'maxmatches = %s\n' "$RM_F2B_MAXMATCHES"
   } >"$out"
 }
 
@@ -234,13 +318,21 @@ f2b_apply_ssh_jail() {
     [[ ${RM_TEST_MODE} == 1 ]] && rm_systemctl restart fail2ban || systemctl restart fail2ban 2>/dev/null || true
     rm -rf "$tmpdir"; return "$rc"
   fi
+  local source_health
+  source_health=$(f2b_log_source_health_json)
+  if [[ $(jq -r .status <<<"$source_health") != ok ]]; then
+    rc=$RM_RC_APPLY_ROLLED_BACK
+    tx_rollback "$tx" 'fail2ban SSH log source unavailable after restart' || rc=$?
+    [[ ${RM_TEST_MODE} == 1 ]] && rm_systemctl restart fail2ban || systemctl restart fail2ban 2>/dev/null || true
+    rm -rf "$tmpdir"; return "$rc"
+  fi
 
   tx_commit "$tx" || { rm -rf "$tmpdir"; return $?; }
   state_add_owned_file /etc/fail2ban/jail.d/relay-manager-ssh.local "$(rm_sha256_file "$RM_F2B_DROPIN")"
-  local backend; backend=$(f2b_backend_json)
+  local backend health; backend=$(f2b_backend_json); health=$(f2b_runtime_health_json)
   rm -rf "$tmpdir"
-  jq -n --argjson backend "$backend" '{status:"applied",jail:"sshd",backend:$backend,
-    note:"只管理 AsterNode 的 SSH jail 片段；未修改 jail.local 或其他 jail。"}'
+  jq -n --argjson backend "$backend" --argjson health "$health" '{status:"applied",jail:"sshd",backend:$backend,health:$health,
+    note:"只管理 AsterNode 的 SSH jail 片段；未修改 jail.local、全局数据库保留或其他 jail。"}'
 }
 
 f2b_disable_managed() {
