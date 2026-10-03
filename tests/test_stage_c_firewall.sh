@@ -157,6 +157,14 @@ export RM_UFW_TEST_VERIFY=VERIFY
 verified=$(fw_mark_whitelist_verified node-fw)
 assert_json "$verified" '.status=="verified_external_contrast"'
 assert_json "$(cat "$RM_STATE_FILE")" '.firewall_verifications["node-fw"].verified==true'
+status=$(fw_status_json)
+assert_json "$status" '
+  .isolation_verified==true and .isolation.required_nodes==1 and
+  any(.isolation.nodes[];
+    .node_id=="node-fw" and .verified==true and
+    .verification_recorded==true and .managed_rules_present==true and
+    .temporary_public_open==false and .external_allow_conflict==false)
+'
 
 cat >"$RM_UFW_STATUS_FILE" <<'EOF'
 Status: active
@@ -195,12 +203,22 @@ export RM_UFW_FRAMEWORK_MODIFIED=false
 : >"$RM_UFW_LOG"
 opened=$(fw_temp_open node-fw 10)
 assert_json "$opened" '.status=="temporary_open_applied_unverified" and .node_id=="node-fw"'
+status=$(fw_status_json)
+assert_json "$status" '
+  .isolation_verified==false and
+  any(.isolation.nodes[];
+    .node_id=="node-fw" and .verified==false and
+    .verification_recorded==true and .temporary_public_open==true and
+    .reason=="temporary-public-open")
+'
 grep -Fq 'prepend allow to any port 443' "$RM_UFW_LOG" ||
   fail 'temporary public allow was not inserted ahead of managed deny'
 assert_json "$(cat "$RM_STATE_FILE")" 'any(.temporary_opens[]; .node_id=="node-fw")'
 
 fw_expire_temp node-fw
 assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="node-fw")]|length)==0'
+status=$(fw_status_json)
+assert_json "$status" '.isolation_verified==true'
 grep -Fq -- '--force delete allow to any port 443' "$RM_UFW_LOG" ||
   fail 'temporary public allow was not removed at expiry'
 [[ -f "$root/etc/systemd/system/relay-manager-temp-node-fw.timer" ]] ||

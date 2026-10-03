@@ -96,6 +96,20 @@ diag_d2() {
   printf '%s\n' "$items"
 }
 
+diag_firewall_isolation_item() {
+  local fw=${1:-}
+  [[ -n $fw ]] || fw=$(fw_status_json)
+  local detail
+  detail=$(jq -c '{isolation_verified,required_nodes:(.isolation.required_nodes//0),nodes:(.isolation.nodes//[])}' <<<"$fw")
+  if jq -e '.installed==true and .active==true and .isolation_verified==true' <<<"$fw" >/dev/null; then
+    status_obj normal firewall-isolation "UFW 来源隔离已完成外部允许/拒绝对照验证 $detail"
+  elif jq -e '.installed==true and .active==true' <<<"$fw" >/dev/null; then
+    status_obj unverified firewall-isolation "UFW 已启用，但至少一个启用中的 whitelist 节点尚未满足当前隔离验证条件 $detail"
+  else
+    status_obj unverified firewall-isolation "本机 UFW 未实施或未启用；节点来源限制不能据此宣称已生效 $detail"
+  fi
+}
+
 diag_d3() {
   local items='[]' x nid target sni result st detail fw
   while IFS=$'\t' read -r nid target sni; do
@@ -112,11 +126,7 @@ diag_d3() {
   done < <(jq -r '.nodes[]|select((if has("enabled") then .enabled else true end)==true)|[.node_id,.target,.sni]|@tsv' "$RM_STATE_FILE")
 
   fw=$(fw_status_json)
-  if jq -e '.installed==true and .active==true' <<<"$fw" >/dev/null; then
-    x=$(status_obj unverified firewall-isolation 'UFW 已启用；来源隔离效果必须由阶段 C 的白名单/非白名单真实连接验证')
-  else
-    x=$(status_obj unverified firewall-isolation '本机 UFW 未实施或未启用；节点来源限制不能据此宣称已生效')
-  fi
+  x=$(diag_firewall_isolation_item "$fw")
   items=$(jq -c --argjson x "$x" '.+[$x]' <<<"$items")
   printf '%s\n' "$items"
 }

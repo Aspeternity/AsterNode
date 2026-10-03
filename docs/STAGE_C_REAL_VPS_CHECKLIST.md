@@ -99,6 +99,7 @@
 6. 双栈节点分别从白名单 IPv4/IPv6 来源建立新连接，并从非白名单 IPv4/IPv6 来源尝试。
 7. PASS 条件：允许来源成功，非白名单新连接均失败；此前不得标记白名单成功。
 8. 在 Docker/firewalld/独立 nftables 等复杂环境确认转为只读/拒绝自动接管。
+9. 完成允许来源成功 + 非白名单来源失败的真实对照并执行 `firewall verify NODE` 后，`firewall status.isolation_verified` 与 Doctor 的 `firewall-isolation` 必须反映已验证状态；任一启用中的 whitelist 节点未验证时全局不得为 true。临时公网开放期间必须暂时降为未验证，到期恢复原白名单后可恢复此前验证状态。
 
 ## C-VPS-07：临时公网开放与重启（T20）
 

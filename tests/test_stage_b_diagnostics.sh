@@ -22,6 +22,35 @@ assert_json "$d1" '
 d4=$(diag_d4)
 assert_json "$d4" 'length==2 and all(.[]; .status=="unverified")'
 
+export RM_UFW_STATUS_FILE="$root/ufw-status.txt"
+export RM_UFW_FRAMEWORK_MODIFIED=false
+mkdir -p "$root/etc/default"
+cat >"$root/etc/default/ufw" <<'EOF'
+IPV6=yes
+EOF
+cat >"$RM_UFW_STATUS_FILE" <<'EOF'
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), disabled (routed)
+
+To                         Action      From
+--                         ------      ----
+443/tcp                    ALLOW       198.51.100.9               # relay-manager:node-stageb:allow:test
+443/tcp                    DENY        Anywhere                   # relay-manager:node-stageb:deny
+EOF
+state_update_filter '
+  .owned_firewall_rules=[
+    {node_id:"node-stageb",comment:"relay-manager:node-stageb:allow:test",port:443,kind:"allow",source:"198.51.100.9",args:["allow"]},
+    {node_id:"node-stageb",comment:"relay-manager:node-stageb:deny",port:443,kind:"deny",source:"any",args:["deny"]}
+  ] |
+  .firewall_verifications={"node-stageb":{verified:true,verified_at:"2026-10-03T16:08:41Z"}}
+'
+fw_item=$(diag_firewall_isolation_item)
+assert_json "$fw_item" '.check=="firewall-isolation" and .status=="normal" and (.detail|contains("外部允许/拒绝对照验证"))'
+state_update_filter '.firewall_verifications={}'
+fw_item=$(diag_firewall_isolation_item)
+assert_json "$fw_item" '.check=="firewall-isolation" and .status=="unverified"'
+
 edir="$RM_VAR_DIR/evidence/d4"
 mkdir -p "$edir"
 chmod 0700 "$RM_VAR_DIR/evidence" "$edir" 2>/dev/null || true

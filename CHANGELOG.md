@@ -2,6 +2,7 @@
 
 ## Unreleased - Stage D maintenance development
 
+- Fixed firewall verification reporting: status and Doctor now aggregate current external-contrast evidence across all enabled whitelist nodes, fail closed when any required node is unverified, and temporarily clear effective verification while a managed public-open exception is active.
 - Fixed Debian/Ubuntu fresh-UFW framework classification: before/after rules are now verified against canonical `/usr/share/ufw/iptables/*.rules` templates plus UCF historical MD5 lists instead of dpkg Conffiles; package-provided `/usr/share/ufw/*.rules` symlinks are accepted while /etc symlinks, unknown edits, and unverifiable metadata remain fail-closed.
 - Real-VPS Target probing now parses full OpenSSL TLS output from temporary files, eliminating the -brief ALPN false-negative/NUL-command-substitution issue; candidate probing also filters HTTP redirects, expands the versioned candidate pool, and reports a measured recommended Target without auto-applying it.
 - Added a hard anti-abuse Target gate: candidate probes test the resolved IP against unrelated valid SNI hostnames, high/unverified cross-SNI risk is excluded from recommendation, and real node create/Target changes re-run the gate before apply.
