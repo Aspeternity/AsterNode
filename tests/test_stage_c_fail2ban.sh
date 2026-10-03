@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-trap 'rc=$?; printf "FAIL: test_stage_c_fail2ban rc=%s line=%s command=%s\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; exit "$rc"' ERR
 source "$(dirname "$0")/testlib.sh"
 
 root=$(new_test_root)
@@ -88,10 +87,8 @@ cat >"$root/etc/fail2ban/jail.local" <<'EOF'
 [sshd]
 enabled = true
 EOF
-set +e
-f2b_apply_ssh_jail >/dev/null 2>&1
-rc=$?
-set -e
+rc=0
+f2b_apply_ssh_jail >/dev/null 2>&1 || rc=$?
 assert_eq 10 "$rc" 'existing administrator-managed sshd jail was overwritten'
 rm -f "$root/etc/fail2ban/jail.local"
 
@@ -129,10 +126,8 @@ fi
 export RM_F2B_TEST_SYSTEMD_PY=0
 unverified=$(f2b_backend_json)
 assert_json "$unverified" '.status=="unverified" and .backend=="systemd" and .dependency=="missing-python-systemd"'
-set +e
-f2b_render_config "$root/invalid.local" >/dev/null 2>&1
-rc=$?
-set -e
+rc=0
+f2b_render_config "$root/invalid.local" >/dev/null 2>&1 || rc=$?
 assert_eq 10 "$rc" 'missing systemd journal dependency did not block jail rendering'
 
 pass 'Stage C Fail2ban backend selection, conflict refusal, UFW action, ignore scope and managed disable'
