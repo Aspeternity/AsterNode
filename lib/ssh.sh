@@ -9,6 +9,10 @@ RM_SSH_DROPIN="$(rm_path /etc/ssh/sshd_config.d/00-relay-manager.conf)"
 RM_SSH_SOCKET_DROPIN="$(rm_path /etc/systemd/system/ssh.socket.d/relay-manager.conf)"
 RM_SSH_PROTECT_SERVICE="$(rm_path /etc/systemd/system/relay-manager-ssh-rollback.service)"
 RM_SSH_PROTECT_TIMER="$(rm_path /etc/systemd/system/relay-manager-ssh-rollback.timer)"
+RM_SSH_BOOT_GUARD_SERVICE="$(rm_path /etc/systemd/system/relay-manager-ssh-boot-guard.service)"
+RM_SSH_SOCKET_GUARD_DROPIN="$(rm_path /etc/systemd/system/ssh.socket.d/relay-manager-guard.conf)"
+RM_SSH_SERVICE_GUARD_DROPIN="$(rm_path /etc/systemd/system/ssh.service.d/relay-manager-guard.conf)"
+RM_SSHD_SERVICE_GUARD_DROPIN="$(rm_path /etc/systemd/system/sshd.service.d/relay-manager-guard.conf)"
 
 ssh_sshd_bin() {
   if rm_have sshd; then command -v sshd; elif [[ -x /usr/sbin/sshd ]]; then printf '/usr/sbin/sshd\n'; else return "$RM_RC_PRECONDITION"; fi
@@ -35,22 +39,62 @@ ssh_listen_ports() {
   fi
 }
 
+ssh_effective_value() {
+  local text=$1 key=$2
+  awk -v k="$key" '$1==k {$1=""; sub(/^ /,""); print; exit}' <<<"$text"
+}
+
+ssh_automation_blockers_json() {
+  local user=${1:-root} addr=${2:-127.0.0.1} eff authcmd authmethods trusted principals akf blockers='[]'
+  eff=$(ssh_effective_text "$user" "$addr" localhost) || {
+    jq -n '["sshd-effective-config-unavailable"]'
+    return 0
+  }
+  authcmd=$(ssh_effective_value "$eff" authorizedkeyscommand)
+  authmethods=$(ssh_effective_value "$eff" authenticationmethods)
+  trusted=$(ssh_effective_value "$eff" trustedusercakeys)
+  principals=$(ssh_effective_value "$eff" authorizedprincipalscommand)
+  akf=$(ssh_effective_value "$eff" authorizedkeysfile)
+  [[ -n $authcmd && $authcmd != none ]] && blockers=$(jq -c --arg v "authorizedkeyscommand:$authcmd" '.+[$v]' <<<"$blockers")
+  [[ -n $trusted && $trusted != none ]] && blockers=$(jq -c --arg v "trustedusercakeys:$trusted" '.+[$v]' <<<"$blockers")
+  [[ -n $principals && $principals != none ]] && blockers=$(jq -c --arg v "authorizedprincipalscommand:$principals" '.+[$v]' <<<"$blockers")
+  [[ -n $authmethods && $authmethods != any ]] && blockers=$(jq -c --arg v "authenticationmethods:$authmethods" '.+[$v]' <<<"$blockers")
+  [[ -z $akf || $akf == none ]] && blockers=$(jq -c '.+["authorizedkeysfile:none-or-missing"]' <<<"$blockers")
+  printf '%s\n' "$blockers"
+}
+
+ssh_config_trace_json() {
+  local items='[]' p
+  for p in /etc/ssh/sshd_config /etc/ssh/sshd_config.d /etc/ssh/sshd_config.d/50-cloud-init.conf; do
+    local rp; rp=$(rm_path "$p")
+    if [[ -e $rp ]]; then
+      items=$(jq -c --arg p "$p" '.+[$p]' <<<"$items")
+    fi
+  done
+  jq -n --argjson items "$items" '{detected_paths:$items}'
+}
+
 ssh_detect_json() {
   local user=${1:-root} addr=${2:-127.0.0.1} mode effective=''
   mode=$(ssh_service_mode)
   if effective=$(ssh_effective_text "$user" "$addr" localhost 2>/dev/null); then :; else effective=''; fi
-  local ports='[]' actual='[]'
+  local ports='[]' actual='[]' blockers='[]' trace
   if [[ -n $effective ]]; then ports=$(awk '$1=="port"{print $2}' <<<"$effective" | jq -R -s 'split("\n")|map(select(length>0)|tonumber)|unique'); fi
   actual=$(ssh_listen_ports | jq -R -s 'split("\n")|map(select(length>0)|tonumber)|unique')
+  blockers=$(ssh_automation_blockers_json "$user" "$addr")
+  trace=$(ssh_config_trace_json)
   jq -n --arg mode "$mode" --arg user "$user" --argjson effective_ports "$ports" --argjson actual_ports "$actual" \
     --arg pubkey "$(awk '$1=="pubkeyauthentication"{print $2;exit}' <<<"$effective")" \
     --arg pass "$(awk '$1=="passwordauthentication"{print $2;exit}' <<<"$effective")" \
     --arg kbd "$(awk '$1=="kbdinteractiveauthentication"{print $2;exit}' <<<"$effective")" \
     --arg root "$(awk '$1=="permitrootlogin"{print $2;exit}' <<<"$effective")" \
-    --arg authm "$(awk '$1=="authenticationmethods"{print $2;exit}' <<<"$effective")" \
-    --arg akf "$(awk '$1=="authorizedkeysfile"{$1="";sub(/^ /,"");print;exit}' <<<"$effective")" \
-    --arg akc "$(awk '$1=="authorizedkeyscommand"{print $2;exit}' <<<"$effective")" \
-    '{user:$user,start_mode:$mode,effective:{ports:$effective_ports,pubkey_authentication:$pubkey,password_authentication:$pass,kbd_interactive_authentication:$kbd,permit_root_login:$root,authentication_methods:$authm,authorized_keys_file:$akf,authorized_keys_command:$akc},actual_listen_ports:$actual_ports,auth_method_verified:false,note:"SSH_CONNECTION 只作线索；本结果不自动证明当前会话认证方式"}'
+    --arg authm "$(ssh_effective_value "$effective" authenticationmethods)" \
+    --arg akf "$(ssh_effective_value "$effective" authorizedkeysfile)" \
+    --arg akc "$(ssh_effective_value "$effective" authorizedkeyscommand)" \
+    --arg trusted "$(ssh_effective_value "$effective" trustedusercakeys)" \
+    --arg principals "$(ssh_effective_value "$effective" authorizedprincipalscommand)" \
+    --argjson blockers "$blockers" --argjson trace "$trace" \
+    '{user:$user,start_mode:$mode,effective:{ports:$effective_ports,pubkey_authentication:$pubkey,password_authentication:$pass,kbd_interactive_authentication:$kbd,permit_root_login:$root,authentication_methods:$authm,authorized_keys_file:$akf,authorized_keys_command:$akc,trusted_user_ca_keys:$trusted,authorized_principals_command:$principals},actual_listen_ports:$actual_ports,automation_tightening_safe:($blockers|length==0),automation_blockers:$blockers,config_trace:$trace,auth_method_verified:false,note:"SSH_CONNECTION 只作线索；本结果不自动证明当前会话认证方式"}'
 }
 
 ssh_main_config_test() { local bin; bin=$(ssh_sshd_bin) || return $?; "$bin" -t; }
@@ -59,12 +103,25 @@ ssh_home_for_user() { getent passwd "$1" | awk -F: '{print $6}'; }
 ssh_uid_gid_for_user() { getent passwd "$1" | awk -F: '{print $3":"$4}'; }
 
 ssh_authorized_keys_path() {
-  local user=$1 eff akf first home
+  local user=$1 eff akf first home path
   eff=$(ssh_effective_text "$user" 127.0.0.1 localhost) || return "$RM_RC_PRECONDITION"
-  akf=$(awk '$1=="authorizedkeysfile"{$1="";sub(/^ /,"");print;exit}' <<<"$eff"); first=${akf%% *}; home=$(ssh_home_for_user "$user")
-  [[ -n $home && -n $first ]] || return "$RM_RC_PRECONDITION"
-  first=${first//%u/$user}; first=${first//%h/$home}
-  if [[ $first == /* ]]; then printf '%s\n' "$(rm_path "$first")"; else printf '%s/%s\n' "$(rm_path "$home")" "$first"; fi
+  akf=$(ssh_effective_value "$eff" authorizedkeysfile)
+  first=${akf%% *}
+  home=$(ssh_home_for_user "$user")
+  [[ -n $home && -n $first && $first != none ]] || {
+    rm_error '有效配置没有可安全管理的 AuthorizedKeysFile'
+    return "$RM_RC_PRECONDITION"
+  }
+  first=${first//%%/%}; first=${first//%u/$user}; first=${first//%h/$home}
+  [[ $first != *%* ]] || { rm_error 'AuthorizedKeysFile 含未支持的动态 token，拒绝自动修改'; return "$RM_RC_PRECONDITION"; }
+  if [[ $first == /* ]]; then path=$first; else path="$home/$first"; fi
+  case "$path" in
+    /root/.ssh/authorized_keys) ;;
+    /home/*/.ssh/authorized_keys) [[ $path =~ ^/home/[^/]+/\.ssh/authorized_keys$ ]] || return "$RM_RC_PRECONDITION" ;;
+    /etc/ssh/authorized_keys/*) [[ $path =~ ^/etc/ssh/authorized_keys/[^/]+$ ]] || return "$RM_RC_PRECONDITION" ;;
+    *) rm_error "首版不自动写入非标准 AuthorizedKeys 路径: $path"; return "$RM_RC_PRECONDITION" ;;
+  esac
+  printf '%s\n' "$(rm_path "$path")"
 }
 
 ssh_public_key_material() {
@@ -74,33 +131,90 @@ ssh_public_key_material() {
 
 ssh_validate_public_key_file() {
   local f=$1
-  [[ -f $f ]] || return "$RM_RC_PRECONDITION"
+  [[ -f $f && ! -L $f ]] || return "$RM_RC_PRECONDITION"
   grep -q 'BEGIN .*PRIVATE KEY' "$f" && { rm_error '拒绝私钥，只接受客户端公钥。'; return "$RM_RC_PRECONDITION"; }
-  local line material
-  line=$(grep -Ev '^[[:space:]]*(#|$)' "$f" | head -n1); material=$(ssh_public_key_material "$line")
+  local count line material tmp
+  count=$(grep -Evc '^[[:space:]]*(#|$)' "$f" 2>/dev/null || true)
+  [[ $count == 1 ]] || { rm_error '每次只接受一条客户端公钥。'; return "$RM_RC_PRECONDITION"; }
+  line=$(grep -Ev '^[[:space:]]*(#|$)' "$f" | head -n1)
+  material=$(ssh_public_key_material "$line")
   [[ -n $material ]] || { rm_error '无法解析公钥格式'; return "$RM_RC_PRECONDITION"; }
-  local tmp; tmp=$(mktemp); printf '%s\n' "$line" >"$tmp"
+  tmp=$(mktemp); printf '%s\n' "$line" >"$tmp"
   ssh-keygen -lf "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; rm_error 'ssh-keygen 校验公钥失败'; return "$RM_RC_PRECONDITION"; }
   rm -f "$tmp"; printf '%s\n' "$line"
 }
 
+ssh_key_inventory_json() {
+  local user=$1 path line tmp fp bits kind items='[]'
+  path=$(ssh_authorized_keys_path "$user") || return $?
+  [[ -f $path && ! -L $path ]] || { jq -n --arg user "$user" --arg path "$path" '{user:$user,path:$path,keys:[]}'; return 0; }
+  while IFS= read -r line; do
+    [[ -n $line && ! $line =~ ^[[:space:]]*# ]] || continue
+    [[ -n $(ssh_public_key_material "$line") ]] || continue
+    tmp=$(mktemp); printf '%s\n' "$line" >"$tmp"
+    if read -r bits fp kind _ < <(ssh-keygen -lf "$tmp" 2>/dev/null); then
+      items=$(jq -c --arg fp "$fp" --arg kind "$kind" --argjson bits "$bits" '.+[{fingerprint:$fp,type:$kind,bits:$bits}]' <<<"$items")
+    fi
+    rm -f "$tmp"
+  done <"$path"
+  jq -n --arg user "$user" --arg path "$path" --argjson keys "$items" '{user:$user,path:$path,keys:$keys}'
+}
+
+ssh_verification_command_json() {
+  local user=$1 host=$2 port=${3:-}
+  [[ -n $user && -n $host ]] || return "$RM_RC_PRECONDITION"
+  if [[ -z $port ]]; then
+    port=$(ssh_listen_ports | head -n1)
+    [[ -n $port ]] || port=22
+  fi
+  rm_valid_port "$port" || return "$RM_RC_PRECONDITION"
+  jq -n --arg user "$user" --arg host "$host" --argjson port "$port" \
+    '{user:$user,host:$host,port:$port,
+      command:("ssh -S none -o ControlMaster=no -o ControlPath=none -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=0 -p "+($port|tostring)+" "+$user+"@"+$host),
+      requirements:["必须新建连接","禁止连接复用","禁止密码回退","禁止键盘交互回退"],
+      note:"命令仅用于人工验证方法；成功连接后仍需显式 mark-key-verified/confirm。"}'
+}
+
 ssh_add_public_key() {
-  local user=$1 keyfile=$2 line path dir owner material tmp tx
-  rm_require_root || return $?; line=$(ssh_validate_public_key_file "$keyfile") || return $?
-  path=$(ssh_authorized_keys_path "$user") || { rm_error '无法安全确定 AuthorizedKeysFile'; return "$RM_RC_PRECONDITION"; }
-  owner=$(ssh_uid_gid_for_user "$user"); [[ -n $owner ]] || return "$RM_RC_PRECONDITION"; dir=$(dirname "$path")
+  local user=$1 keyfile=$2 line path dir owner material tmp tx rc=0 created_dir=false fingerprint
+  rm_require_root || return $?
+  line=$(ssh_validate_public_key_file "$keyfile") || return $?
+  path=$(ssh_authorized_keys_path "$user") || return $?
+  owner=$(ssh_uid_gid_for_user "$user"); [[ -n $owner ]] || return "$RM_RC_PRECONDITION"
+  dir=$(dirname "$path")
   [[ -L $path || -L $dir ]] && { rm_error 'AuthorizedKeys 路径包含符号链接，拒绝自动修改'; return "$RM_RC_PRECONDITION"; }
-  mkdir -p "$dir"; chmod 0700 "$dir"; [[ ${RM_TEST_MODE} == 1 ]] || chown "$owner" "$dir"
+  if [[ -e $dir && ! -d $dir ]]; then rm_error '公钥目录路径异常'; return "$RM_RC_PRECONDITION"; fi
+  if [[ ! -d $dir ]]; then
+    rm_assert_no_symlink_components "$(dirname "$dir")" || return $?
+    install -d -m 0700 "$dir" || return "$RM_RC_PRECONDITION"
+    [[ ${RM_TEST_MODE} == 1 ]] || chown "$owner" "$dir" || { rmdir "$dir" 2>/dev/null || true; return "$RM_RC_PRECONDITION"; }
+    created_dir=true
+  fi
+
   tmp=$(rm_safe_tmpdir)/authorized_keys
   [[ -f $path ]] && cat "$path" >"$tmp" || : >"$tmp"
   material=$(ssh_public_key_material "$line")
-  if awk -v m="$material" '{for(i=1;i<=NF;i++) if($i==m) found=1} END{exit found?0:1}' "$tmp"; then rm_info '相同密钥材料已存在，不重复添加。'; return 0; fi
+  if awk -v m="$material" '{for(i=1;i<=NF;i++) if($i==m) found=1} END{exit found?0:1}' "$tmp"; then
+    rm_info '相同密钥材料已存在，不重复添加。'
+    $created_dir && rmdir "$dir" 2>/dev/null || true
+    return 0
+  fi
   printf '%s\n' "$line" >>"$tmp"
-  tx=$(tx_begin ssh-add-key) || return $?
-  tx_stage_file "$tx" "$tmp" "$path" 0600 "$owner" || { tx_rollback "$tx" 'key stage failed' || true; return "$RM_RC_PRECONDITION"; }
-  tx_apply "$tx" || { local rc=$?; tx_rollback "$tx" 'key apply failed' || true; return "$rc"; }
-  tx_commit "$tx"
-  ssh-keygen -lf "$path" | tail -n1
+  tx=$(tx_begin ssh-add-key) || { $created_dir && rmdir "$dir" 2>/dev/null || true; return $?; }
+  tx_stage_file "$tx" "$tmp" "$path" 0600 "$owner" || {
+    tx_rollback "$tx" 'key stage failed' || true
+    $created_dir && rmdir "$dir" 2>/dev/null || true
+    return "$RM_RC_PRECONDITION"
+  }
+  tx_apply "$tx" || {
+    rc=$?
+    tx_rollback "$tx" 'key apply failed' || true
+    $created_dir && rmdir "$dir" 2>/dev/null || true
+    return "$rc"
+  }
+  tx_commit "$tx" || return $?
+  fingerprint=$(ssh-keygen -lf "$keyfile" 2>/dev/null | awk '{print $2;exit}')
+  jq -n --arg user "$user" --arg path "$path" --arg fp "$fingerprint" '{status:"added",user:$user,path:$path,fingerprint:$fp}'
 }
 
 ssh_policy_load_or_init() {
@@ -129,19 +243,31 @@ ssh_socket_render_override() {
 }
 
 ssh_protection_setup() {
-  local deadline=$1 tmpdir svc timer tx
-  tmpdir=$(rm_safe_tmpdir); svc="$tmpdir/service"; timer="$tmpdir/timer"
+  local deadline=$1 mode=$2 tmpdir svc timer guard guard_dropin guard_dest tx rc=0
+  [[ $mode == socket || $mode == service:ssh || $mode == service:sshd ]] || return "$RM_RC_PRECONDITION"
+  tmpdir=$(rm_safe_tmpdir); svc="$tmpdir/service"; timer="$tmpdir/timer"; guard="$tmpdir/guard"; guard_dropin="$tmpdir/guard-dropin"
   cat >"$svc" <<'EOS'
 [Unit]
-Description=Relay Manager SSH rollback protection
-After=network.target
+Description=AsterNode SSH rollback protection
+After=local-fs.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/relay-manager ssh rollback-pending
 EOS
+  cat >"$guard" <<'EOS'
+[Unit]
+Description=AsterNode SSH boot recovery guard
+DefaultDependencies=no
+After=local-fs.target
+Before=ssh.service sshd.service ssh.socket
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/relay-manager ssh rollback-pending
+EOS
   cat >"$timer" <<EOS
 [Unit]
-Description=Relay Manager SSH rollback deadline
+Description=AsterNode SSH rollback deadline
 [Timer]
 OnCalendar=@$deadline
 Persistent=true
@@ -150,15 +276,42 @@ Unit=relay-manager-ssh-rollback.service
 [Install]
 WantedBy=timers.target
 EOS
+  cat >"$guard_dropin" <<'EOS'
+[Unit]
+Requires=relay-manager-ssh-boot-guard.service
+After=relay-manager-ssh-boot-guard.service
+EOS
+  case "$mode" in
+    socket) guard_dest=$RM_SSH_SOCKET_GUARD_DROPIN ;;
+    service:ssh) guard_dest=$RM_SSH_SERVICE_GUARD_DROPIN ;;
+    service:sshd) guard_dest=$RM_SSHD_SERVICE_GUARD_DROPIN ;;
+  esac
   tx=$(tx_begin ssh-protection) || { rm -rf "$tmpdir"; return $?; }
-  tx_stage_file "$tx" "$svc" "$RM_SSH_PROTECT_SERVICE" 0644 root:root || { tx_rollback "$tx" 'protect service stage failed' || true; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
-  tx_stage_file "$tx" "$timer" "$RM_SSH_PROTECT_TIMER" 0644 root:root || { tx_rollback "$tx" 'protect timer stage failed' || true; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
-  tx_apply "$tx" || { local rc=$?; tx_rollback "$tx" 'protect apply failed' || true; rm -rf "$tmpdir"; return "$rc"; }
-  if [[ ${RM_TEST_MODE} != 1 ]]; then
-    systemctl daemon-reload && systemctl enable --now relay-manager-ssh-rollback.timer >/dev/null || { tx_rollback "$tx" 'protect timer activation failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
+  tx_stage_file "$tx" "$svc" "$RM_SSH_PROTECT_SERVICE" 0644 root:root || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$timer" "$RM_SSH_PROTECT_TIMER" 0644 root:root || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$guard" "$RM_SSH_BOOT_GUARD_SERVICE" 0644 root:root || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$guard_dropin" "$guard_dest" 0644 root:root || rc=$?
+  if ((rc!=0)); then tx_rollback "$tx" 'protection stage failed' || true; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; fi
+  tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'protection apply failed' || true; rm -rf "$tmpdir"; return "$rc"; }
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    rm_systemctl daemon-reload
+    rm_systemctl start relay-manager-ssh-boot-guard.service
+    rm_systemctl enable relay-manager-ssh-rollback.timer
+    rm_systemctl start relay-manager-ssh-rollback.timer
+  else
+    systemctl daemon-reload || { tx_rollback "$tx" 'protection daemon-reload failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
+    systemctl start relay-manager-ssh-boot-guard.service >/dev/null || { tx_rollback "$tx" 'boot guard activation failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
+    systemctl is-active --quiet relay-manager-ssh-boot-guard.service || { tx_rollback "$tx" 'boot guard inactive' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
+    systemctl enable --now relay-manager-ssh-rollback.timer >/dev/null || { tx_rollback "$tx" 'protect timer activation failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
     systemctl is-active --quiet relay-manager-ssh-rollback.timer || { tx_rollback "$tx" 'protect timer not active' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
   fi
-  tx_commit "$tx"; rm -rf "$tmpdir"
+  tx_commit "$tx" || { rm -rf "$tmpdir"; return $?; }
+  state_init >/dev/null
+  state_add_owned_file /etc/systemd/system/relay-manager-ssh-rollback.service "$(rm_sha256_file "$RM_SSH_PROTECT_SERVICE")"
+  state_add_owned_file /etc/systemd/system/relay-manager-ssh-rollback.timer "$(rm_sha256_file "$RM_SSH_PROTECT_TIMER")"
+  state_add_owned_file /etc/systemd/system/relay-manager-ssh-boot-guard.service "$(rm_sha256_file "$RM_SSH_BOOT_GUARD_SERVICE")"
+  state_add_owned_file "${guard_dest#"${RM_ROOT%/}"}" "$(rm_sha256_file "$guard_dest")" 2>/dev/null || true
+  rm -rf "$tmpdir"
 }
 
 ssh_protection_disable() {
@@ -180,14 +333,18 @@ ssh_pending_tx_id() {
 }
 
 ssh_apply_policy_protected() {
-  local policy=$1 change=$2 deadline=${3:-$(( $(rm_epoch)+300 ))} mode tmpdir drop socket tx rc
-  rm_require_root || return $?; rm_tty_available || { rm_error 'SSH 安全修改要求交互 TTY。'; return "$RM_RC_PRECONDITION"; }
-  ssh_protection_setup "$deadline" || return $?
-  mode=$(ssh_service_mode); [[ $mode != unknown ]] || { ssh_protection_disable; return "$RM_RC_PRECONDITION"; }
+  local policy=$1 change=$2 target_user=${3:-root} deadline=${4:-$(( $(rm_epoch)+300 ))} mode tmpdir drop socket tx rc service_unit
+  rm_require_root || return $?
+  if [[ ${RM_TEST_MODE} != 1 ]]; then rm_tty_available || { rm_error 'SSH 安全修改要求交互 TTY。'; return "$RM_RC_PRECONDITION"; }; fi
+  ssh_main_config_test || { rm_error '现有 sshd 配置本身未通过语法检查，拒绝开始迁移。'; return "$RM_RC_PRECONDITION"; }
+  mode=$(ssh_service_mode); [[ $mode != unknown ]] || return "$RM_RC_PRECONDITION"
+  ssh_protection_setup "$deadline" "$mode" || return $?
   tmpdir=$(rm_safe_tmpdir); drop="$tmpdir/ssh.conf"; socket="$tmpdir/socket.conf"
   ssh_policy_render_dropin "$policy" "$drop"; ssh_socket_render_override "$policy" "$socket"
   tx=$(tx_begin "ssh-change:$change" "$deadline") || { ssh_protection_disable; rm -rf "$tmpdir"; return $?; }
-  tx_update "$tx" '.ssh={change:$change,ports:$ports}' --arg change "$change" --argjson ports "$(jq '.ports' "$policy")"
+  tx_update "$tx" '.ssh={change:$change,ports:$ports,target_user:$user}' --arg change "$change" --argjson ports "$(jq '.ports' "$policy")" --arg user "$target_user"
+  case "$mode" in socket) service_unit=ssh.socket;; service:ssh) service_unit=ssh.service;; service:sshd) service_unit=sshd.service;; esac
+  tx_record_service "$tx" "$service_unit" true || true
   tx_stage_file "$tx" "$policy" "$RM_SSH_POLICY" 0600 root:root || { tx_rollback "$tx" 'policy stage failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
   tx_stage_file "$tx" "$drop" "$RM_SSH_DROPIN" 0644 root:root || { tx_rollback "$tx" 'dropin stage failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
   if [[ $mode == socket ]]; then tx_stage_file "$tx" "$socket" "$RM_SSH_SOCKET_DROPIN" 0644 root:root || { tx_rollback "$tx" 'socket override stage failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }; fi
@@ -203,7 +360,7 @@ ssh_begin_port_migration() {
   if rm_have ss && ss -H -lnt "sport = :$newport" 2>/dev/null | grep -q .; then rm_error '新 SSH 端口已被占用'; return "$RM_RC_PRECONDITION"; fi
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   ports=$(jq --argjson p "$newport" '.ports + [$p] | unique' "$policy"); jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" port-migration) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  local result; result=$(ssh_apply_policy_protected "$policy" port-migration root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
 }
 
 ssh_begin_remove_old_port() {
@@ -211,26 +368,39 @@ ssh_begin_remove_old_port() {
   rm_valid_port "$keep" || return "$RM_RC_PRECONDITION"
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   jq --argjson p "$keep" '.ports=[$p]' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" remove-old-port) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  local result; result=$(ssh_apply_policy_protected "$policy" remove-old-port root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
 }
 
 ssh_mark_key_verified() {
-  local user=$1 ans
-  rm_tty_available || return "$RM_RC_PRECONDITION"
+  local user=$1 fingerprint=${2:-} ans inv
   ssh_effective_text "$user" 127.0.0.1 localhost | grep -q '^pubkeyauthentication yes' || { rm_error '有效配置未允许公钥认证'; return "$RM_RC_PRECONDITION"; }
-  rm_read_tty ans '请确认：你刚刚使用该用户在“全新 SSH 连接”中成功完成公钥登录，且未回退到密码/键盘交互。输入 VERIFY 继续: '
+  inv=$(ssh_key_inventory_json "$user") || return $?
+  if [[ -z $fingerprint ]]; then
+    [[ $(jq '.keys|length' <<<"$inv") == 1 ]] || { rm_error '存在多把公钥时必须明确提供已验证的 fingerprint。'; return "$RM_RC_PRECONDITION"; }
+    fingerprint=$(jq -r '.keys[0].fingerprint' <<<"$inv")
+  fi
+  jq -e --arg fp "$fingerprint" 'any(.keys[]; .fingerprint==$fp)' <<<"$inv" >/dev/null || { rm_error '指定 fingerprint 不在当前 AuthorizedKeysFile 中'; return "$RM_RC_PRECONDITION"; }
+  if [[ ${RM_TEST_MODE} == 1 && ${RM_SSH_TEST_MANUAL_VERIFY:-} == VERIFY ]]; then ans=VERIFY
+  else
+    rm_tty_available || return "$RM_RC_PRECONDITION"
+    rm_read_tty ans '请确认：你刚刚使用该用户在全新 SSH 连接中成功完成该公钥登录，且禁用了连接复用、密码和键盘交互回退。输入 VERIFY 继续: '
+  fi
   [[ $ans == VERIFY ]] || return "$RM_RC_CANCEL"
-  state_init >/dev/null; state_update_filter '.ssh_verifications=((.ssh_verifications//{}) + {($user):{key_login_manual:true,verified_at:$now}})' --arg user "$user"
+  state_init >/dev/null
+  state_update_filter '.ssh_verifications=((.ssh_verifications//{}) + {($user):((.ssh_verifications[$user]//{}) + {key_login_manual:true,verified_at:$now,verified_key_fingerprints:(((.ssh_verifications[$user].verified_key_fingerprints//[]) + [$fp])|unique)})})' --arg user "$user" --arg fp "$fingerprint"
+  jq -n --arg user "$user" --arg fp "$fingerprint" '{status:"manual_new_connection_verified",user:$user,fingerprint:$fp}'
 }
 
 ssh_begin_disable_password() {
-  local user=$1 tmp policy eff authm verified
-  state_init >/dev/null; verified=$(jq -r --arg u "$user" '.ssh_verifications[$u].key_login_manual//false' "$RM_STATE_FILE"); [[ $verified == true ]] || { rm_error '先完成新连接公钥登录并执行 ssh mark-key-verified。'; return "$RM_RC_PRECONDITION"; }
-  eff=$(ssh_effective_text "$user" 127.0.0.1 localhost); authm=$(awk '$1=="authenticationmethods"{print $2;exit}' <<<"$eff")
-  [[ -z $authm || $authm == any ]] || { rm_error "检测到 AuthenticationMethods=$authm，可能存在 MFA；拒绝自动关闭密码。"; return "$RM_RC_PRECONDITION"; }
+  local user=$1 tmp policy verified blockers
+  state_init >/dev/null
+  verified=$(jq -r --arg u "$user" '((.ssh_verifications[$u].verified_key_fingerprints//[])|length)>0' "$RM_STATE_FILE")
+  [[ $verified == true ]] || { rm_error '先按生成的全新连接命令完成公钥登录并记录已验证 fingerprint。'; return "$RM_RC_PRECONDITION"; }
+  blockers=$(ssh_automation_blockers_json "$user" 127.0.0.1)
+  [[ $(jq 'length' <<<"$blockers") == 0 ]] || { rm_error "检测到外部认证/MFA/CA 配置，拒绝自动关闭密码: $(jq -c . <<<"$blockers")"; return "$RM_RC_PRECONDITION"; }
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   jq '.password_authentication="no"|.kbd_interactive_authentication="no"' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" disable-password) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  local result; result=$(ssh_apply_policy_protected "$policy" disable-password "$user") || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
 }
 
 ssh_record_sudo_verified() {
@@ -241,35 +411,46 @@ ssh_record_sudo_verified() {
 }
 
 ssh_begin_root_policy() {
-  local policy_name=$1 admin_user=${2:-} tmp policy keyok sudook
+  local policy_name=$1 admin_user=${2:-} tmp policy keyok sudook blockers
   [[ $policy_name == publickey-only || $policy_name == disable ]] || return "$RM_RC_PRECONDITION"
   state_init >/dev/null
-  if [[ $policy_name == disable ]]; then
+  blockers=$(ssh_automation_blockers_json root 127.0.0.1)
+  [[ $(jq 'length' <<<"$blockers") == 0 ]] || { rm_error "检测到 Root 外部认证/MFA/CA 配置，拒绝自动收紧: $(jq -c . <<<"$blockers")"; return "$RM_RC_PRECONDITION"; }
+  if [[ $policy_name == publickey-only ]]; then
+    keyok=$(jq -r '((.ssh_verifications.root.verified_key_fingerprints//[])|length)>0' "$RM_STATE_FILE")
+    [[ $keyok == true ]] || { rm_error 'Root 改为仅公钥前必须先验证 Root 的全新公钥连接。'; return "$RM_RC_PRECONDITION"; }
+  else
     [[ -n $admin_user && $admin_user != root ]] || return "$RM_RC_PRECONDITION"
-    keyok=$(jq -r --arg u "$admin_user" '.ssh_verifications[$u].key_login_manual//false' "$RM_STATE_FILE"); sudook=$(jq -r --arg u "$admin_user" '.ssh_verifications[$u].sudo_manual//false' "$RM_STATE_FILE")
+    keyok=$(jq -r --arg u "$admin_user" '((.ssh_verifications[$u].verified_key_fingerprints//[])|length)>0' "$RM_STATE_FILE")
+    sudook=$(jq -r --arg u "$admin_user" '.ssh_verifications[$u].sudo_manual//false' "$RM_STATE_FILE")
     [[ $keyok == true && $sudook == true ]] || { rm_error '禁用 Root 前必须验证非 Root 新连接和实际 sudo 提权。'; return "$RM_RC_PRECONDITION"; }
   fi
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   if [[ $policy_name == disable ]]; then jq '.permit_root_login="no"' "$policy" >"$tmp/p2"; else jq '.permit_root_login="prohibit-password"' "$policy" >"$tmp/p2"; fi; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" "root-$policy_name") || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  local result; result=$(ssh_apply_policy_protected "$policy" "root-$policy_name" root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
 }
 
 ssh_confirm_pending() {
-  local tx=${1:-} f change ans eff ports p
+  local tx=${1:-} f change ans eff ports p target_user
   [[ -n $tx ]] || tx=$(ssh_pending_tx_id) || { rm_error '没有待确认 SSH 事务'; return "$RM_RC_PRECONDITION"; }
-  f=$(tx_file "$tx"); [[ $(jq -r .status "$f") == APPLIED_PENDING ]] || return "$RM_RC_PRECONDITION"; change=$(jq -r '.ssh.change' "$f")
+  f=$(tx_file "$tx"); [[ $(jq -r .status "$f") == APPLIED_PENDING ]] || return "$RM_RC_PRECONDITION"
+  change=$(jq -r '.ssh.change' "$f"); target_user=$(jq -r '.ssh.target_user // "root"' "$f")
   ssh_main_config_test || return "$RM_RC_PRECONDITION"
   ports=$(jq -c '.ssh.ports' "$f")
   if [[ $change == port-migration || $change == remove-old-port ]]; then
     for p in $(jq -r '.[]' <<<"$ports"); do ssh_listen_ports | grep -qx "$p" || { rm_error "目标端口未监听: $p"; return "$RM_RC_PRECONDITION"; }; done
   fi
-  eff=$(ssh_effective_text root 127.0.0.1 localhost || true)
+  eff=$(ssh_effective_text "$target_user" 127.0.0.1 localhost || true)
   if [[ $change == disable-password ]]; then grep -q '^passwordauthentication no' <<<"$eff" && grep -q '^kbdinteractiveauthentication no' <<<"$eff" || return "$RM_RC_PRECONDITION"; fi
   if [[ $change == root-disable ]]; then grep -q '^permitrootlogin no' <<<"$eff" || return "$RM_RC_PRECONDITION"; fi
-  rm_tty_available || return "$RM_RC_PRECONDITION"
-  rm_read_tty ans '请确认：你已从另一个“全新 SSH 连接”按新策略成功登录，并保留当前旧会话作为兜底。输入 COMMIT 提交: '
+  if [[ ${RM_TEST_MODE} == 1 && ${RM_SSH_TEST_COMMIT:-} == COMMIT ]]; then ans=COMMIT
+  else
+    rm_tty_available || return "$RM_RC_PRECONDITION"
+    rm_read_tty ans '请确认：你已从另一个全新 SSH 连接按新策略成功登录，并保留当前旧会话作为兜底。输入 COMMIT 提交: '
+  fi
   [[ $ans == COMMIT ]] || return "$RM_RC_CANCEL"
-  tx_commit "$tx"; ssh_protection_disable
+  tx_commit "$tx" || return $?
+  ssh_protection_disable
   jq -n --arg tx "$tx" '{status:"committed_after_manual_verification",transaction_id:$tx}'
 }
 
