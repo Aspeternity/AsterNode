@@ -1,0 +1,9 @@
+[Unit]
+Description=AsterNode firewall expiry reconciliation before Xray
+After=local-fs.target
+Before=relay-manager-xray.service
+ConditionPathExists=/etc/relay-manager/state.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/relay-manager firewall reconcile-expired
