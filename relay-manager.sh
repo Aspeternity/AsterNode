@@ -196,7 +196,10 @@ firewall_cmd() {
   local sub=${1:-status}; shift || true
   case "$sub" in
     status) fw_status_json;;
+    install) mutation_guard; fw_install_packages false;;
+    enable) mutation_guard; fw_enable_safe "$@";;
     apply) mutation_guard; local nid=$1 node port; shift; node=$(state_get_node "$nid"); port=$(jq -r .listen_port <<<"$node"); fw_apply_whitelist "$nid" "$port" "$@";;
+    verify) mutation_guard; fw_mark_whitelist_verified "$1";;
     remove-node) mutation_guard; fw_remove_node_rules "$1";;
     temp-open) mutation_guard; fw_temp_open "$1" "${2:-10}";;
     expire-temp) rm_require_root; fw_expire_temp "$1";;
@@ -268,7 +271,8 @@ AsterNode CLI
                     source-add ID IP_OR_CIDR|source-remove ID IP_OR_CIDR
                     rotate-prepare ID [SEC]|rotate-commit ID|rotate-cancel ID
   relay-manager export UPSTREAM [current|pending] [--show]
-  relay-manager firewall status|apply NODE SOURCE...|remove-node NODE|temp-open NODE [MIN]|expire-temp NODE
+  relay-manager firewall status|install|enable [SSH_PORT...]|apply NODE [SOURCE...]|verify NODE
+                    remove-node NODE|temp-open NODE [MIN]|expire-temp NODE
   relay-manager ssh status [USER]|key-inventory USER|verify-command USER HOST [PORT]
                     add-key USER FILE|migrate-port PORT|remove-old-port PORT
                     mark-key-verified USER [FINGERPRINT]|disable-password USER|verify-sudo USER
@@ -370,6 +374,7 @@ case "$cmd" in
       [[ $rc == "$RM_RC_RECOVERY_INCOMPLETE" ]] && exit "$rc"
     }
     upstream_rotation_reconcile_expired
+    fw_reconcile_expired
     ;;
   help|-h|--help)
     help_cmd
