@@ -168,7 +168,9 @@ xray_core_prepare() {
 }
 
 xray_core_set_current_link() {
-  local version=$1 dest="$RM_CORE_BASE/$version"
+  local version dest
+  version=$1
+  dest="$RM_CORE_BASE/$version"
   [[ -d $dest && ! -L $dest && -x $dest/xray && ! -L $dest/xray ]] || return "$RM_RC_PRECONDITION"
   ln -sfn "$dest" "$RM_CORE_CURRENT.tmp" || return "$RM_RC_INTERNAL"
   mv -Tf "$RM_CORE_CURRENT.tmp" "$RM_CORE_CURRENT" || {
