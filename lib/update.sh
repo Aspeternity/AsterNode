@@ -699,7 +699,8 @@ update_core_rollback() {
   target_version=$(jq -r '.core_version//empty' "$manifest")
   [[ -n $target_version ]] || { rm_error '恢复点未记录旧核心版本'; return "$RM_RC_PRECONDITION"; }
   backup_bin="$root/files/usr/local/lib/relay-manager/core/$target_version/xray"
-  [[ -f $backup_bin && ! -L $backup_bin && -x $backup_bin ]] || {
+  # Backup payloads are intentionally stored as 0600; executable mode is restored on install.
+  [[ -f $backup_bin && ! -L $backup_bin ]] || {
     rm_error '恢复点缺少旧核心二进制'
     return "$RM_RC_PRECONDITION"
   }
