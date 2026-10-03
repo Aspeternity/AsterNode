@@ -23,7 +23,7 @@ TXT
 
 install_dependencies() {
   local missing=() c pkglist=() pkg
-  for c in jq curl openssl ip ss flock unzip sha256sum tar; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
+  for c in jq curl openssl ip ss flock unzip sha256sum tar fuser; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
   ((${#missing[@]}==0)) && return 0
   [[ -f /etc/debian_version ]] || { rm_error "缺少依赖: ${missing[*]}"; return "$RM_RC_PRECONDITION"; }
   if [[ ${RM_TEST_MODE} == 1 ]]; then
@@ -32,7 +32,7 @@ install_dependencies() {
   fi
   for c in "${missing[@]}"; do
     case "$c" in
-      jq) pkg=jq;; curl) pkg=curl;; openssl) pkg=openssl;; ip|ss) pkg=iproute2;; flock) pkg=util-linux;; unzip) pkg=unzip;; sha256sum) pkg=coreutils;; tar) pkg=tar;; *) continue;;
+      jq) pkg=jq;; curl) pkg=curl;; openssl) pkg=openssl;; ip|ss) pkg=iproute2;; flock) pkg=util-linux;; unzip) pkg=unzip;; sha256sum) pkg=coreutils;; tar) pkg=tar;; fuser) pkg=psmisc;; *) continue;;
     esac
     pkglist+=("$pkg")
   done

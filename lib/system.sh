@@ -116,6 +116,24 @@ system_inode_json() {
   fi
 }
 
+_system_proc_file_in_use() {
+  local path=$1 proc_root fd target
+  proc_root=$(rm_path /proc)
+  [[ -d $proc_root ]] || return 2
+  rm_have readlink || return 2
+
+  # On the live host, another user's fd table may be hidden from an unprivileged probe.
+  # Do not claim "clear" unless root can inspect it. RM_ROOT fixtures are safe to inspect.
+  if [[ -z $RM_ROOT && ${EUID:-$(id -u)} -ne 0 ]]; then return 2; fi
+
+  for fd in "$proc_root"/[0-9]*/fd/*; do
+    [[ -L $fd ]] || continue
+    target=$(readlink -f -- "$fd" 2>/dev/null || true)
+    [[ $target == "$path" ]] && return 0
+  done
+  return 1
+}
+
 system_pkg_manager_json() {
   local kind=unknown status=unverified reason='未检测到支持的包管理器' locked_json=null lock_status=unverified
   local apt_present=false
@@ -126,17 +144,49 @@ system_pkg_manager_json() {
   fi
   if [[ $apt_present == true ]]; then
     kind=apt; status=ok
-    if ! rm_have fuser; then
-      reason='缺少 fuser，包管理锁状态未检测'; lock_status=unverified; locked_json=null
+    local lock p hit='' probe_mode=none probe_rc=0
+    if rm_have fuser; then
+      probe_mode=fuser
+    elif [[ -d $(rm_path /proc) ]] && rm_have readlink &&
+         { [[ -n $RM_ROOT ]] || [[ ${EUID:-$(id -u)} -eq 0 ]]; }; then
+      probe_mode=proc
+    fi
+
+    if [[ $probe_mode == none ]]; then
+      reason='缺少 fuser，且当前权限/环境无法安全检查 /proc 包管理占用'
+      lock_status=unverified
+      locked_json=null
     else
-      local lock p hit=''
       for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
         p=$(rm_path "$lock")
         [[ -e $p ]] || continue
-        if fuser "$p" >/dev/null 2>&1; then hit=$lock; break; fi
+        probe_rc=1
+        if [[ $probe_mode == fuser ]]; then
+          fuser "$p" >/dev/null 2>&1 && probe_rc=0 || probe_rc=$?
+        else
+          _system_proc_file_in_use "$p" && probe_rc=0 || probe_rc=$?
+        fi
+        if ((probe_rc==0)); then hit=$lock; break; fi
+        if ((probe_rc==2)); then probe_mode=none; break; fi
       done
-      if [[ -n $hit ]]; then locked_json=true; lock_status=locked; reason="检测到包管理锁占用: $hit"
-      else locked_json=false; lock_status=clear; reason='未发现包管理锁占用'; fi
+
+      if [[ $probe_mode == none ]]; then
+        reason='缺少 fuser，且 /proc 回退检查不可用'
+        lock_status=unverified
+        locked_json=null
+      elif [[ -n $hit ]]; then
+        locked_json=true
+        lock_status=locked
+        reason="检测到包管理锁文件正被占用: $hit"
+      else
+        locked_json=false
+        lock_status=clear
+        if [[ $probe_mode == fuser ]]; then
+          reason='未发现包管理锁占用'
+        else
+          reason='未发现包管理锁占用（/proc 回退检查）'
+        fi
+      fi
     fi
   fi
   jq -n --arg kind "$kind" --arg status "$status" --arg lock_status "$lock_status" --arg reason "$reason" --argjson locked "$locked_json" \
@@ -204,6 +254,41 @@ system_component_json() {
   fi
   jq -n --arg name "$name" --argjson installed "$installed" --argjson active "$active_json" --arg path "$path" --arg status "$status" --arg reason "$reason" \
     '{name:$name,status:$status,installed:$installed,active:$active,path:(if $path=="" then null else $path end),reason:(if $reason=="" then null else $reason end)}'
+}
+
+system_managed_xray_json() {
+  local base current resolved='' bin='' version='' installed=false active_json=null status=unverified reason='未检测到 AsterNode 受管 Xray'
+  base=$(rm_path /usr/local/lib/relay-manager/core)
+  current="$base/current"
+
+  if [[ -L $current ]]; then
+    resolved=$(readlink -f -- "$current" 2>/dev/null || true)
+    if [[ -n $resolved && $resolved == "$base/"* && -d $resolved &&
+          -x $resolved/xray && ! -L $resolved/xray ]]; then
+      bin="$resolved/xray"
+      version=${resolved##*/}
+      installed=true
+      status=ok
+      reason=''
+    else
+      reason='受管 Xray current 链接无效或越出受管目录'
+    fi
+  elif [[ -e $current ]]; then
+    reason='受管 Xray current 不是符号链接'
+  fi
+
+  if _system_live_probe_allowed && [[ -d /run/systemd/system ]] && rm_have systemctl; then
+    if systemctl is-active --quiet relay-manager-xray.service 2>/dev/null; then active_json=true; else active_json=false; fi
+  elif [[ $installed == true ]]; then
+    active_json=null
+    reason='服务运行状态未检测'
+  fi
+
+  jq -n --argjson installed "$installed" --argjson active "$active_json" --arg path "$bin" --arg version "$version" \
+    --arg status "$status" --arg reason "$reason" \
+    '{name:"xray",managed:true,source:"asternode-managed",status:$status,installed:$installed,active:$active,
+      path:(if $path=="" then null else $path end),version:(if $version=="" then null else $version end),
+      reason:(if $reason=="" then null else $reason end)}'
 }
 
 system_external_processes_json() {
@@ -345,17 +430,25 @@ system_conflicts_json() {
 
 system_probe_fast() {
   local ssh_user=${1:-root} ssh_addr=${2:-127.0.0.1}
-  local support mem disk inode pkg net ext fw f2b xray xui nginx ssh conflicts cpu
+  local support mem disk inode pkg net ext fw f2b xray managed_xray external_xray xui nginx ssh conflicts cpu
   support=$(system_support_json); mem=$(system_memory_json); disk=$(system_disk_json); inode=$(system_inode_json); pkg=$(system_pkg_manager_json)
   net=$(system_network_json); ext=$(system_external_processes_json); fw=$(system_firewall_json)
-  f2b=$(system_component_json fail2ban fail2ban-client fail2ban); xray=$(system_component_json xray xray xray); xui=$(system_component_json 3x-ui x-ui x-ui); nginx=$(system_component_json nginx nginx nginx)
+  f2b=$(system_component_json fail2ban fail2ban-client fail2ban)
+  managed_xray=$(system_managed_xray_json)
+  external_xray=$(system_component_json xray xray xray | jq '. + {managed:false,source:"external-path"}')
+  if jq -e '.installed==true' <<<"$managed_xray" >/dev/null; then xray=$managed_xray; else xray=$external_xray; fi
+  xui=$(system_component_json 3x-ui x-ui x-ui); nginx=$(system_component_json nginx nginx nginx)
   ssh=$(system_ssh_json "$ssh_user" "$ssh_addr"); conflicts=$(system_conflicts_json)
   cpu=$(system_cpu_count 2>/dev/null || printf null); [[ $cpu =~ ^[0-9]+$ ]] || cpu=null
   jq -n \
     --arg generated_at "$(rm_now)" --argjson support "$support" --argjson cpu "$cpu" \
     --argjson memory "$mem" --argjson disk "$disk" --argjson inode "$inode" --argjson package_manager "$pkg" \
-    --argjson network "$net" --argjson external_processes "$ext" --argjson firewall "$fw" --argjson fail2ban "$f2b" --argjson xray "$xray" --argjson xui "$xui" --argjson nginx "$nginx" --argjson ssh "$ssh" --argjson conflicts "$conflicts" --argjson euid "$(id -u)" \
-    '{generated_at:$generated_at,probe_mode:"read-only",support:$support,privilege:{euid:$euid,is_root:($euid==0)},cpu:{logical:$cpu},memory:$memory,disk:$disk,inode:$inode,package_manager:$package_manager,network:$network,ssh:$ssh,firewall:$firewall,components:{fail2ban:$fail2ban,xray:$xray,xui:$xui,nginx:$nginx},external_processes:$external_processes,conflicts:$conflicts}'
+    --argjson network "$net" --argjson external_processes "$ext" --argjson firewall "$fw" --argjson fail2ban "$f2b" \
+    --argjson xray "$xray" --argjson managed_xray "$managed_xray" --argjson external_xray "$external_xray" \
+    --argjson xui "$xui" --argjson nginx "$nginx" --argjson ssh "$ssh" --argjson conflicts "$conflicts" --argjson euid "$(id -u)" \
+    '{generated_at:$generated_at,probe_mode:"read-only",support:$support,privilege:{euid:$euid,is_root:($euid==0)},cpu:{logical:$cpu},memory:$memory,disk:$disk,inode:$inode,package_manager:$package_manager,network:$network,ssh:$ssh,firewall:$firewall,
+      components:{fail2ban:$fail2ban,xray:$xray,xray_managed:$managed_xray,xray_external:$external_xray,xui:$xui,nginx:$nginx},
+      external_processes:$external_processes,conflicts:$conflicts}'
 }
 
 system_probe_public_address() {
