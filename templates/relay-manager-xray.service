@@ -1,6 +1,7 @@
 [Unit]
 Description=Relay Manager managed Xray
-After=network-online.target
+Requires=relay-manager-firewall-guard.service
+After=network-online.target relay-manager-firewall-guard.service
 Wants=network-online.target
 ConditionPathExists=/etc/relay-manager-xray/config.json
 
