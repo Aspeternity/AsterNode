@@ -176,6 +176,8 @@ ssh_cmd() {
   local sub=${1:-status}; shift || true
   case "$sub" in
     status) ssh_detect_json "${1:-root}" "${2:-127.0.0.1}";;
+    key-inventory) ssh_key_inventory_json "$1";;
+    verify-command) ssh_verification_command_json "$1" "$2" "${3:-}";;
     add-key) mutation_guard; ssh_add_public_key "$1" "$2";;
     migrate-port) mutation_guard; ssh_begin_port_migration "$1";;
     remove-old-port) mutation_guard; ssh_begin_remove_old_port "$1";;
@@ -267,8 +269,9 @@ AsterNode CLI
                     rotate-prepare ID [SEC]|rotate-commit ID|rotate-cancel ID
   relay-manager export UPSTREAM [current|pending] [--show]
   relay-manager firewall status|apply NODE SOURCE...|remove-node NODE|temp-open NODE [MIN]|expire-temp NODE
-  relay-manager ssh status [USER]|add-key USER FILE|migrate-port PORT|remove-old-port PORT
-                    mark-key-verified USER|disable-password USER|verify-sudo USER
+  relay-manager ssh status [USER]|key-inventory USER|verify-command USER HOST [PORT]
+                    add-key USER FILE|migrate-port PORT|remove-old-port PORT
+                    mark-key-verified USER [FINGERPRINT]|disable-password USER|verify-sudo USER
                     root-publickey-only|root-disable ADMIN_USER|confirm [TX]|rollback-pending
   relay-manager fail2ban status|install|apply|banned|unban IP
   relay-manager backup list|create [config|upgrade]|restore ID|restore-nodes ID
