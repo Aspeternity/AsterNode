@@ -168,7 +168,7 @@ target_probe_candidates() {
       pids=("${pids[@]:1}")
     fi
   done < <(jq -r '.candidates | to_entries[] |
-    [.key,.value.target,.value.sni,(.value.recommendable//true),(.value.official_reference//false),(.value.risk_class//"standard"),(.value.note//"")] | @tsv' "$RM_TARGETS_FILE")
+    [.key,.value.target,.value.sni,(if (.value|has("recommendable")) then .value.recommendable else true end),(.value.official_reference//false),(.value.risk_class//"standard"),(.value.note//"")] | @tsv' "$RM_TARGETS_FILE")
 
   for pid in "${pids[@]}"; do wait "$pid" || true; done
 
@@ -187,7 +187,7 @@ target_probe_candidates() {
     ] | sort_by(.latency_ms)' <<<"$results")
   recommended=$(jq '[
       .[] |
-      select(.status=="suitable_measured" and (.candidate.recommendable//true)==true) |
+      select(.status=="suitable_measured" and (if (.candidate|has("recommendable")) then .candidate.recommendable else true end)==true) |
       . + {_selection_rank:[.latency_ms,(if (.candidate.official_reference//false) then 0 else 1 end),(.candidate.order//999)]}
     ] | sort_by(._selection_rank) |
       (.[0] // null) |
