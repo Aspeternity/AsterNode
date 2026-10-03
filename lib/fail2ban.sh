@@ -179,7 +179,7 @@ f2b_render_config() {
     printf 'port = %s\n' "$ports"
     printf 'backend = %s\n' "$backend"
     if [[ $backend == polling ]]; then printf 'logpath = %s\n' "$logpath"; fi
-    [[ -n $action ]] && printf '%s' "$action"
+    [[ -n $action ]] && printf '%s\n' "$action"
     printf 'ignoreip = %s\n' "$(jq -r 'join(" ")' <<<"$ignore_json")"
     printf 'maxretry = 5\n'
     printf 'findtime = 10m\n'
