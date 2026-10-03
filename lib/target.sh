@@ -27,8 +27,9 @@ target_shared_edge_suffix() {
   local name=${1%.}
   [[ -r $RM_TARGETS_FILE ]] || return 1
   jq -r --arg n "${name,,}" '
-    .shared_edge_suffixes[]? |
-    select($n == . or ($n|endswith("." + .)))
+    .shared_edge_suffixes[]? as $suffix |
+    select($n == $suffix or ($n|endswith("." + $suffix))) |
+    $suffix
   ' "$RM_TARGETS_FILE" 2>/dev/null | head -n1
 }
 
