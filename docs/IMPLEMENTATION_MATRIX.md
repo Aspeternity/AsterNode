@@ -81,24 +81,24 @@
 | F2B-04 | C | 完成（策略/隔离） | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | 自有 jail maxmatches/findtime/bantime 已固定记录；全局数据库/logrotate 只观察不改；disable 只停自有 jail |
 | DIAG-01 | B/D | 部分完成 | diagnostics.sh | test_stage_b_diagnostics.sh | D1-D4 分层与证据失效检测已实现；D4 必须由真实线路 VPS 记录 |
 | DIAG-02 | B/D | 完成（Stage B 范围） | diagnostics.sh | test_stage_b_diagnostics.sh | 脱敏包 0600、默认不联网、不上传、凭据不进入包；D 阶段再扩展发行/长期日志边界 |
-| UPDATE-01 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| UPDATE-02 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| UPDATE-03 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| UPDATE-04 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| UPDATE-05 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| UPDATE-06 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| UPDATE-07 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| UPDATE-08 | D | 未验收 | lib/update.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| BACKUP-01 | D | 未验收 | lib/backup.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| BACKUP-02 | D | 未验收 | lib/backup.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| BACKUP-03 | D | 未验收 | lib/backup.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| REMOVE-01 | D | 未验收 | lib/remove.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| REMOVE-02 | D | 未验收 | lib/remove.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| REMOVE-03 | D | 未验收 | lib/remove.sh（早期草稿） | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| PERF-01 | D/跨阶段 | 未验收 | 架构约束部分已体现在当前代码；正式证据待 D | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| PERF-02 | D/跨阶段 | 未验收 | 架构约束部分已体现在当前代码；正式证据待 D | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| PERF-03 | D/跨阶段 | 未验收 | 架构约束部分已体现在当前代码；正式证据待 D | — | 存在草稿不代表完成；按对应阶段开发、隔离测试和实机证据后更新 |
-| TEST-01 | A/跨阶段 | 完成当前阶段自动化 | tests/run.sh; .github/workflows/ci.yml | CI #88: 21/0/0; bash -n; ShellCheck; pinned Xray parse | 真实 systemd/网络/SSH/UFW/Fail2ban 仍属于 TEST-02 |
-| TEST-02 | A/跨阶段 | 待最终统一实机验收 | docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md | — | 按用户计划在 A-D 开发完成后统一执行可恢复 VM/VPS 真实门槛 |
-| TEST-03 | A/跨阶段 | 部分建立 | docs/TEST_REPORT.md; docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md | Stage A/B/C 自动化 + CI #88 | 真实 VPS 记录仍需 case_id/镜像/版本/实际结果/脱敏证据 |
-| TEST-04 | A/跨阶段 | 未完成 | docs/TEST_REPORT.md | T01-T36 当前结论表 | 最终首版门槛需 B/C/D 后完整执行 |
+| UPDATE-01 | D | 完成（隔离/发行级） | lib/update.sh; tools/build-release.sh | test_stage_d_release.sh; CI #103 | 签名 manifest、SHA256SUMS、文件集合/大小/权限/哈希与危险归档输入已自动化；真实固定 URL 下载待 VPS |
+| UPDATE-02 | D | 完成（隔离/信任边界） | tools/generate-bootstrap.sh; install.sh | test_stage_d_bootstrap.sh; CI #103 | bootstrap 固定版本、包/公钥 URL 与 SHA-256，不跟随 main/latest；首次 bootstrap HTTPS 信任仍需发布流程与 VPS 记录 |
+| UPDATE-03 | D | 完成（隔离） | lib/update.sh: update_install_trusted_key | test_stage_d_release.sh | 首次受信公钥固定、不同公钥静默替换被拒绝；正式密钥轮换流程作为发布运维事项单独执行 |
+| UPDATE-04 | D | 完成（隔离） | lib/update.sh: update_install_manager_package | test_stage_d_release.sh; CI #103 | 外层包 SHA、签名发行内容、release smoke、版本目录切换与同版本幂等已覆盖；真实磁盘/断电故障待 VPS |
+| UPDATE-05 | D | 完成（隔离） | lib/update.sh: update_manager_rollback | test_stage_d_release.sh | 上一版本完整性/冒烟校验后回退，失败恢复 current；真实运行中版本切换待 VPS |
+| UPDATE-06 | D | 完成（隔离/配置级） | lib/update.sh; lib/core-xray.sh | test_stage_d_core_update.sh; CI #103 real Xray | 新核心先准备/验证后切换，保留 service enabled/active 状态并在失败后恢复旧核心；真实线路兼容待 VPS |
+| UPDATE-07 | D | 完成（隔离） | lib/update.sh: update_core_rollback; lib/backup.sh | test_stage_d_core_update.sh | 显式 rollback-core 使用升级恢复点，旧核心 0600 备份按 0755 恢复；真实服务/线路回退待 VPS |
+| UPDATE-08 | D | 完成（边界） | lib/update.sh: update_status_json/update_verify_current_manager | test_stage_d_release.sh | 状态/完整性检查默认只读且不联网，不在启动时隐式更新；远端“是否有新版本”不作为首版自动行为 |
+| BACKUP-01 | D | 完成（隔离） | lib/backup.sh | test_stage_d_backup.sh; test_stage_d_maintenance.sh; CI #103 | ID/路径/类型/权限/哈希/状态 schema 校验，0600 payload 与 0700 目录；真实磁盘损坏/空间压力待 VPS |
+| BACKUP-02 | D | 完成（隔离/安全边界） | lib/backup.sh: backup_restore_local | test_stage_d_backup.sh | 同机恢复要求 machine-id 指纹一致，只恢复节点/线路数据并由当前核心重新渲染；当前 SSH/UFW/Fail2ban 与服务启停不被旧备份覆盖 |
+| BACKUP-03 | D | 完成（隔离/迁移边界） | lib/backup.sh: backup_restore_nodes_only | test_stage_d_backup.sh | 跨机器仅允许导入到空节点状态，节点/线路强制禁用且不迁移安全状态；真实第二台 VPS 复核待最终 Gate |
+| REMOVE-01 | D | 完成（隔离） | lib/remove.sh | test_stage_d_remove.sh; CI #103 | 卸载前检查未完成事务、关键文件所有权/漂移、manager/core current 一致性，并默认创建恢复备份 |
+| REMOVE-02 | D | 完成（所有权边界） | lib/remove.sh | test_stage_d_remove.sh | 仅删除可证明归 AsterNode 管理的服务、核心、版本、运行状态；未知/漂移内容保留并报告 |
+| REMOVE-03 | D | 完成（保守默认） | lib/remove.sh; relay-manager.sh | test_stage_d_remove.sh | 默认保留 SSH 安全策略/密钥、UFW 服务与管理员规则、Fail2ban 配置、受信发行公钥、备份和导出；备份/导出可显式单独删除 |
+| PERF-01 | D/跨阶段 | 完成（架构/自动化） | lib/maintenance.sh; templates/relay-manager-maintenance.* | test_stage_d_maintenance.sh; test_stage_b_core_service.sh | 无自有常驻管理器 daemon，维护为 systemd oneshot/timer；真实长期 RSS/CPU 待 VPS 观察 |
+| PERF-02 | D/跨阶段 | 完成（受管增长边界） | lib/maintenance.sh; lib/backup.sh | test_stage_d_maintenance.sh; CI #103 | 终态事务、备份、撤销/孤儿导出、D4 证据、旧 manager/core 版本均有保守回收；恢复状态/未知内容/当前及回退版本受保护 |
+| PERF-03 | D/跨阶段 | 完成（可观测/边界） | lib/maintenance.sh: maintenance_status_json | test_stage_d_maintenance.sh | 报告磁盘与受管目录增长；不改 system journal / Fail2ban 全局 logrotate，Xray access log 默认关闭；低配 VPS 长期压力仍待实机 |
+| TEST-01 | A/跨阶段 | 完成当前阶段自动化 | tests/run.sh; .github/workflows/ci.yml | CI #103: 27/0/0; bash -n; ShellCheck; pinned Xray parse | 真实 systemd/网络/SSH/UFW/Fail2ban/更新恢复仍属于 TEST-02 |
+| TEST-02 | A/跨阶段 | 待最终统一实机验收 | docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md; docs/STAGE_D_REAL_VPS_CHECKLIST.md | — | A-D 代码/隔离自动化已收尾，下一 Gate 为可恢复 VM/VPS 统一真实验收 |
+| TEST-03 | A/跨阶段 | 完成验收记录框架 | docs/TEST_REPORT.md; docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md; docs/STAGE_D_REAL_VPS_CHECKLIST.md | Stage A-D 自动化 + CI #103 | 每个真实 case 仍需镜像/架构/版本/命令/结果/脱敏证据 |
+| TEST-04 | A/跨阶段 | 待最终 Gate | docs/TEST_REPORT.md; docs/STAGE_*_REAL_VPS_CHECKLIST.md | CI #103 为当前自动化基线 | B/C/D checklist 的真实门槛全部通过后，才能进入首个发布候选版本判定 |

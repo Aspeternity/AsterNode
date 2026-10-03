@@ -9,7 +9,11 @@
 - Core updates now stage/download a candidate without switching the active symlink, test the existing shared config first, preserve the prior service enabled/active state, and restore the previous core on post-switch failure.
 - Added explicit `update rollback-core UPGRADE_BACKUP_ID`; successful local validation remains separate from real line-client compatibility, and shared-service restarts are reported as connection-interrupting.
 - Preserved explicit first-bootstrap trust boundaries in README: a remote bootstrap cannot independently prove the integrity of itself.
-- Stage D release/bootstrap remains pre-production until the remaining update, backup/restore, removal, resource and final VM/VPS gates are complete.
+- Added integrity-checked backups with same-host machine binding; same-host restore preserves current SSH/UFW/Fail2ban and service state, while portable restore imports nodes/upstreams disabled for review.
+- Added ownership-scoped uninstall with preflight drift checks, a default recovery backup, managed systemd/core/version cleanup, and conservative preservation of security settings, trust anchors, backups, exports and unknown content.
+- Added low-resource maintenance status/pruning for terminal transactions, bounded backups, revoked/orphaned exports, orphaned D4 evidence, and old verified manager/core versions without deleting recovery state or unknown paths.
+- CI #103 on `489fb8a` passed 27 tests with zero failures/skips, Bash syntax, ShellCheck and the pinned real-Xray configuration job.
+- Stage D code/isolated automation is closed out; B/C/D real VPS gates remain mandatory before a release candidate can be treated as production-ready.
 
 ## Unreleased - Stage C security development
 

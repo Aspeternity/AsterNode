@@ -7,7 +7,7 @@
 3. 本机 SSH 回滚不能修复云安全组、NAT、供应商网络故障或损坏系统；`ssh recovery-guide` 只能给出本机/控制台恢复路径。
 4. UFW 白名单在完成“允许来源成功 + 非允许来源失败”的外部对照前保持未验证。复杂 nftables、firewalld、Docker/容器链或自定义 UFW framework 会阻止自动接管。
 5. Fail2ban 当前只管理 AsterNode 自有 sshd jail。实际攻击触发、封禁与解封效果必须在隔离 VM/VPS 验证；全局数据库保留和系统 logrotate 仅观察，不自动改写。
-6. Stage D 的正式远程 bootstrap、发行包签名/信任锚、更新/回退、备份恢复、卸载与最终发布矩阵仍未完成。
+6. Stage D 的代码与隔离自动化已在 `489fb8a` / CI #103 收尾，但远程 bootstrap、真实 manager/core 更新回退、同机/跨机恢复、卸载重装、低资源长期增长与故障注入仍需 `docs/STAGE_D_REAL_VPS_CHECKLIST.md` 真实验收。
 7. ARM64 固定资产元数据已记录，但当前 CI 的真实 Xray 执行仍是 amd64；ARM64 必须在对应架构实测。
 8. Target 探测只代表执行探测的 VPS 当时网络，不会自动选择 Target 或修改节点。
 

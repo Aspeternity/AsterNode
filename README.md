@@ -2,7 +2,7 @@
 
 Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。目标是不安装网页面板、不引入数据库或自有常驻守护进程，通过可审计状态、事务和模块边界管理 Xray 节点、安全组件、线路机凭据与维护操作。
 
-> 当前版本：`0.2.0-dev`。阶段 A 基础、阶段 B 节点自动化/配置级开发与阶段 C 安全模块的代码/隔离自动化已完成；Stage C 稳定功能基线为 `bd4d10d` / CI #88（21 passed / 0 failed / 0 skipped）。真实 VPS/systemd、IPv4/IPv6、SSH 故障注入、UFW 白名单隔离、Fail2ban 实际封禁，以及 3x-ui T24/T25 仍待最终统一实机验收，因此当前仍不是生产发布版。
+> 当前版本：`0.2.0-dev`。阶段 A-D 的功能代码与隔离自动化现已收尾；Stage D 当前稳定功能基线为 `489fb8a` / CI #103（27 passed / 0 failed / 0 skipped，Bash syntax、ShellCheck 与固定 Xray v26.3.27 真实配置解析均通过）。真实 VPS/systemd、IPv4/IPv6/NAT、SSH 故障注入、UFW 白名单隔离、Fail2ban 实际封禁、3x-ui T24/T25，以及 Stage D 的 bootstrap/更新回退/备份恢复/卸载仍待统一实机验收，因此当前仍不是生产发布版。
 
 ## 当前进展
 
@@ -31,6 +31,18 @@ Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。�
 - CI #88 在 `bd4d10d` 上得到 `21 passed / 0 failed / 0 skipped`，Bash syntax、ShellCheck 与固定 Xray 配置解析均通过。
 
 Stage C 的真实 SSH/UFW/Fail2ban 门槛按项目计划延后到 A-D 全部开发完成后的统一实机验收；详见 `docs/STAGE_C_REAL_VPS_CHECKLIST.md`。
+
+Stage D 已完成代码与隔离自动化收尾：
+
+- 固定版本签名发行包：外层包 SHA-256、签名 manifest、文件集合/大小/权限/内容哈希与危险归档输入检查。
+- 固定版本 bootstrap：固定发行版本、包 URL/哈希和受信公钥 URL/哈希，不跟随 `main` / `latest`。
+- 管理器与 Xray 更新/回退：候选先验证再切换；失败恢复旧版本；核心更新保留原 service enabled/active 状态。
+- 备份/恢复：0600 完整性恢复点；同机恢复保留当前安全状态，跨机只导入禁用节点/线路机供人工复核。
+- 卸载：先做所有权/漂移预检并创建恢复点；只删除可证明归 AsterNode 管理的对象，默认保留 SSH/UFW/Fail2ban 与受信发行公钥。
+- 低资源维护：无自有常驻 manager daemon；对终态事务、备份、孤儿导出/证据和旧版本做保守有界回收，未知内容与恢复状态不自动删除。
+- CI #103 在 `489fb8a` 上得到 `27 passed / 0 failed / 0 skipped`，真实 Xray job、Bash syntax 与 ShellCheck 全部通过。
+
+Stage D 的真实门槛见 `docs/STAGE_D_REAL_VPS_CHECKLIST.md`。下一阶段不是继续扩功能，而是按 B/C/D checklist 执行统一真实 VPS Gate；Gate 通过后再准备首个发布候选版本。
 
 ## 只读使用
 
@@ -109,6 +121,10 @@ lib/core-xray.sh           固定版本核心与受管 systemd 服务
 lib/node.sh                节点/线路机生命周期
 lib/export.sh              线路机参数与配置导出
 lib/target.sh              REALITY Target 探测
+lib/backup.sh              备份、同机恢复与跨机禁用导入
+lib/update.sh              管理器 / Xray 更新与回退
+lib/remove.sh              所有权范围卸载
+lib/maintenance.sh         低资源 VPS 的受管增长统计与安全回收
 protocols/                 协议模块
 compat/                    版本/Target 兼容数据
 templates/                 systemd 等版本化模板
@@ -132,6 +148,6 @@ docs/                      需求矩阵、测试报告和审查交接
 1. **A 基础**：检测、状态模型、模块接口、事务与恢复、安装入口。
 2. **B 节点**：Xray、VLESS + RAW/TCP + REALITY、线路机、导出、Target、基础诊断。代码/自动化基线完成，真实网络 Gate 待最终验收。
 3. **C 安全**：UFW、SSH 公钥/迁移/保护、Fail2ban。代码/隔离自动化收尾完成，真实安全 Gate 待最终验收。
-4. **D 维护**：更新回退、备份恢复、卸载、发行包与完整兼容矩阵。**开发中：签名发行包与固定版本 bootstrap 已进入自动化验证**
+4. **D 维护**：更新回退、备份恢复、卸载、发行包与资源增长控制。**代码/隔离自动化已收尾：`489fb8a` / CI #103；下一步为统一真实 VPS Gate**
 
 需求逐项状态与未验证边界见 `docs/IMPLEMENTATION_MATRIX.md` 和 `docs/TEST_REPORT.md`。
