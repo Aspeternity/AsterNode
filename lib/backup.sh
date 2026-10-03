@@ -25,13 +25,23 @@ backup_create() {
   local id root corev
   id=$(backup_id_new); root="$RM_BACKUP_DIR/$id"; install -d -m 0700 "$root/files"
   : >"$root/manifest.entries"
-  backup_copy_one "$root" /etc/relay-manager/state.json || { rm -rf "$root"; return $?; }
-  backup_copy_one "$root" /etc/relay-manager-xray/config.json || { rm -rf "$root"; return $?; }
-  backup_copy_one "$root" /etc/systemd/system/relay-manager-xray.service || { rm -rf "$root"; return $?; }
+  local copy_rc=0
+  backup_copy_one "$root" /etc/relay-manager/state.json || copy_rc=$?
+  if ((copy_rc==0)); then backup_copy_one "$root" /etc/relay-manager-xray/config.json || copy_rc=$?; fi
+  if ((copy_rc==0)); then backup_copy_one "$root" /etc/systemd/system/relay-manager-xray.service || copy_rc=$?; fi
+  if ((copy_rc!=0)); then
+    rm -rf "$root"
+    return "$copy_rc"
+  fi
   if [[ $kind == upgrade ]]; then
     corev=$(jq -r '.core_version//empty' "$RM_STATE_FILE")
-    [[ -n $corev ]] && backup_copy_one "$root" "/usr/local/lib/relay-manager/core/$corev/xray" || true
-  else corev=$(jq -r '.core_version//empty' "$RM_STATE_FILE"); fi
+    if [[ -n $corev ]]; then
+      backup_copy_one "$root" "/usr/local/lib/relay-manager/core/$corev/xray" || copy_rc=$?
+      if ((copy_rc!=0)); then rm -rf "$root"; return "$copy_rc"; fi
+    fi
+  else
+    corev=$(jq -r '.core_version//empty' "$RM_STATE_FILE")
+  fi
   jq -s --arg id "$id" --arg kind "$kind" --arg created "$(rm_now)" --arg schema "$RM_SCHEMA_VERSION" --arg manager "$RM_MANAGER_VERSION" --arg core "$corev" \
     '{backup_id:$id,kind:$kind,created_at:$created,schema_version:($schema|tonumber),manager_version:$manager,core_version:(if $core=="" then null else $core end),files:.}' "$root/manifest.entries" >"$root/manifest.json"
   rm -f "$root/manifest.entries"; chmod 0600 "$root/manifest.json"

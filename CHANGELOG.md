@@ -6,6 +6,8 @@
 - Added a generator for fixed-version HTTPS bootstrap scripts that pin both package and release-public-key SHA-256 values and reject unsafe archive paths/types before extraction.
 - Manager package installation now requires the fixed outer package SHA-256; the bootstrap never follows floating `main` or `latest`.
 - Added local-only update status and current-manager integrity verification so offline/network failures do not block inspection of installed state.
+- Core updates now stage/download a candidate without switching the active symlink, test the existing shared config first, preserve the prior service enabled/active state, and restore the previous core on post-switch failure.
+- Added explicit `update rollback-core UPGRADE_BACKUP_ID`; successful local validation remains separate from real line-client compatibility, and shared-service restarts are reported as connection-interrupting.
 - Preserved explicit first-bootstrap trust boundaries in README: a remote bootstrap cannot independently prove the integrity of itself.
 - Stage D release/bootstrap remains pre-production until the remaining update, backup/restore, removal, resource and final VM/VPS gates are complete.
 

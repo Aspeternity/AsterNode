@@ -590,28 +590,168 @@ update_verify_current_manager() {
   jq -n --arg path "$current" --arg version "$(jq -r .version "$current/MANIFEST.json")"     '{status:"verified",current_path:$path,version:$version,network_used:false}'
 }
 
+update_xray_service_state_json() {
+  local active=false enabled=false
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    [[ ${RM_UPDATE_TEST_XRAY_ACTIVE:-false} == true ]] && active=true
+    [[ ${RM_UPDATE_TEST_XRAY_ENABLED:-false} == true ]] && enabled=true
+  else
+    rm_service_is_active "$RM_XRAY_SERVICE" && active=true
+    rm_service_is_enabled "$RM_XRAY_SERVICE" && enabled=true
+  fi
+  jq -n --argjson active "$active" --argjson enabled "$enabled" '{active:$active,enabled:$enabled}'
+}
+
+update_apply_xray_service_state() {
+  local enabled=$1 active=$2
+  [[ $enabled == true || $enabled == false ]] || return "$RM_RC_PRECONDITION"
+  [[ $active == true || $active == false ]] || return "$RM_RC_PRECONDITION"
+  rm_systemctl daemon-reload || return "$RM_RC_INTERNAL"
+  if [[ $enabled == true ]]; then
+    rm_systemctl enable "$RM_XRAY_SERVICE" >/dev/null || return "$RM_RC_INTERNAL"
+  else
+    rm_systemctl disable "$RM_XRAY_SERVICE" >/dev/null || return "$RM_RC_INTERNAL"
+  fi
+  if [[ $active == true ]]; then
+    rm_systemctl restart "$RM_XRAY_SERVICE" || return "$RM_RC_INTERNAL"
+    if [[ ${RM_TEST_MODE} != 1 ]]; then rm_service_is_active "$RM_XRAY_SERVICE" || return "$RM_RC_INTERNAL"; fi
+  else
+    rm_systemctl stop "$RM_XRAY_SERVICE" >/dev/null || return "$RM_RC_INTERNAL"
+  fi
+}
+
+update_restore_core_state() {
+  local version=$1 enabled=$2 active=$3 rc=0
+  xray_core_set_current_link "$version" || rc=$?
+  if ((rc==0)); then state_update_filter '.core_version=$v' --arg v "$version" || rc=$?; fi
+  if ((rc==0)); then update_apply_xray_service_state "$enabled" "$active" || rc=$?; fi
+  ((rc==0)) || return "$RM_RC_RECOVERY_INCOMPLETE"
+}
+
 update_core_to() {
-  local version=$1 old backup rc=0
-  state_init >/dev/null; tx_has_conflict && { rm_error '有未完成事务，禁止核心更新'; return "$RM_RC_PRECONDITION"; }
+  local version=$1 old old_link backup service enabled active rc=0
+  state_init >/dev/null || return $?
+  tx_has_conflict && { rm_error '有未完成事务，禁止核心更新'; return "$RM_RC_PRECONDITION"; }
   jq -e --arg v "$version" '.core.xray[$v] != null and .core.xray[$v].channel=="stable"' "$RM_COMPAT_FILE" >/dev/null || {
     rm_error '目标核心不在稳定兼容矩阵'
     return "$RM_RC_PRECONDITION"
   }
+
   old=$(jq -r '.core_version//empty' "$RM_STATE_FILE")
+  [[ -n $old ]] || { rm_error '当前没有可作为回退基线的受管核心'; return "$RM_RC_PRECONDITION"; }
+  old_link=$(readlink -f "$RM_CORE_CURRENT" 2>/dev/null || true)
+  [[ $old_link == "$RM_CORE_BASE/$old" && -x $old_link/xray && ! -L $old_link/xray ]] || {
+    rm_error '当前核心链接/状态不一致，拒绝更新'
+    return "$RM_RC_PRECONDITION"
+  }
+
+  if [[ $version == "$old" ]]; then
+    if [[ -f $RM_XRAY_CONFIG ]]; then xray_test_config "$RM_XRAY_CONFIG" "$old_link/xray" || return $?; fi
+    jq -n --arg version "$version" '{status:"already_current",core_version:$version,line_end_to_end:"unverified"}'
+    return 0
+  fi
+
+  service=$(update_xray_service_state_json)
+  enabled=$(jq -r .enabled <<<"$service")
+  active=$(jq -r .active <<<"$service")
   backup=$(backup_create upgrade) || return $?
-  xray_core_install "$version" || return $?
+
+  xray_core_prepare "$version" || return $?
   if [[ -f $RM_XRAY_CONFIG ]]; then
-    if ! xray_test_config "$RM_XRAY_CONFIG" "$(xray_path_for_version "$version")"; then rc=$RM_RC_PRECONDITION; fi
-    if ((rc==0)) && ! xray_service_enable_start true; then rc=$RM_RC_APPLY_ROLLED_BACK; fi
+    xray_test_config "$RM_XRAY_CONFIG" "$(xray_path_for_version "$version")" || return "$RM_RC_PRECONDITION"
+    xray_test_config_as_service_user "$RM_XRAY_CONFIG" "$(xray_path_for_version "$version")" || return "$RM_RC_PRECONDITION"
   fi
-  if ((rc)); then
-    rm_error "新核心验证/启动失败，尝试恢复 $old"
-    if [[ -n $old && -x $(xray_path_for_version "$old") ]]; then
-      ln -sfn "$RM_CORE_BASE/$old" "$RM_CORE_CURRENT.tmp"; mv -Tf "$RM_CORE_CURRENT.tmp" "$RM_CORE_CURRENT"
-      state_update_filter '.core_version=$v' --arg v "$old"
-      xray_service_enable_start true || true
-    fi
-    return "$rc"
+
+  xray_core_set_current_link "$version" || return "$RM_RC_INTERNAL"
+  update_apply_xray_service_state "$enabled" "$active" || rc=$?
+  if ((rc!=0)); then
+    rm_error "新核心服务状态应用失败，恢复 $old"
+    update_restore_core_state "$old" "$enabled" "$active" || return "$RM_RC_RECOVERY_INCOMPLETE"
+    return "$RM_RC_APPLY_ROLLED_BACK"
   fi
-  jq -n --arg version "$version" --arg backup "$backup"     '{status:"updated",core_version:$version,rollback_backup:$backup,line_end_to_end:"unverified",note:"本机配置/服务通过不代表所有线路客户端兼容；核心切换会重启共享 Xray 进程。"}'
+
+  state_update_filter '.core_version=$v' --arg v "$version" || rc=$?
+  if ((rc!=0)); then
+    rm_error "新核心状态提交失败，恢复 $old"
+    update_restore_core_state "$old" "$enabled" "$active" || return "$RM_RC_RECOVERY_INCOMPLETE"
+    return "$RM_RC_APPLY_ROLLED_BACK"
+  fi
+
+  [[ $(readlink -f "$RM_CORE_CURRENT" 2>/dev/null || true) == "$RM_CORE_BASE/$version" ]] || {
+    rm_error "核心切换后链接校验失败，恢复 $old"
+    update_restore_core_state "$old" "$enabled" "$active" || return "$RM_RC_RECOVERY_INCOMPLETE"
+    return "$RM_RC_APPLY_ROLLED_BACK"
+  }
+
+  jq -n --arg version "$version" --arg old "$old" --arg backup "$backup"     --argjson restarted "$active"     '{status:"updated",core_version:$version,previous_core_version:$old,rollback_backup:$backup,
+      shared_service_restarted:$restarted,line_end_to_end:"unverified",
+      note:"新核心已通过本机配置/权限与服务状态检查；若共享服务原本运行，本次切换会中断现有连接。线路端兼容仍未验证。"}'
+}
+
+update_core_rollback() {
+  local backup_id=$1 manifest root target_version current_version current_link service enabled active target_dir backup_bin rc=0
+  state_init >/dev/null || return $?
+  tx_has_conflict && { rm_error '有未完成事务，禁止核心回退'; return "$RM_RC_PRECONDITION"; }
+  backup_verify "$backup_id" || { rm_error '升级恢复点校验失败'; return "$RM_RC_PRECONDITION"; }
+  root="$RM_BACKUP_DIR/$backup_id"
+  manifest="$root/manifest.json"
+  jq -e '.kind=="upgrade"' "$manifest" >/dev/null || { rm_error '指定恢复点不是核心升级恢复点'; return "$RM_RC_PRECONDITION"; }
+  target_version=$(jq -r '.core_version//empty' "$manifest")
+  [[ -n $target_version ]] || { rm_error '恢复点未记录旧核心版本'; return "$RM_RC_PRECONDITION"; }
+  backup_bin="$root/files/usr/local/lib/relay-manager/core/$target_version/xray"
+  [[ -f $backup_bin && ! -L $backup_bin && -x $backup_bin ]] || {
+    rm_error '恢复点缺少旧核心二进制'
+    return "$RM_RC_PRECONDITION"
+  }
+
+  current_version=$(jq -r '.core_version//empty' "$RM_STATE_FILE")
+  current_link=$(readlink -f "$RM_CORE_CURRENT" 2>/dev/null || true)
+  [[ -n $current_version && $current_link == "$RM_CORE_BASE/$current_version" && -x $current_link/xray ]] || {
+    rm_error '当前核心状态不一致，拒绝自动回退'
+    return "$RM_RC_PRECONDITION"
+  }
+  [[ $current_version != "$target_version" ]] || {
+    jq -n --arg version "$target_version" '{status:"already_current",core_version:$version,line_end_to_end:"unverified"}'
+    return 0
+  }
+
+  target_dir="$RM_CORE_BASE/$target_version"
+  if [[ -e $target_dir || -L $target_dir ]]; then
+    [[ -d $target_dir && ! -L $target_dir && -f $target_dir/xray && ! -L $target_dir/xray ]] || return "$RM_RC_PRECONDITION"
+    [[ $(rm_sha256_file "$target_dir/xray") == $(rm_sha256_file "$backup_bin") ]] || {
+      rm_error '旧核心版本目录与升级恢复点不一致，拒绝覆盖'
+      return "$RM_RC_PRECONDITION"
+    }
+  else
+    rm_assert_no_symlink_components "$(dirname "$RM_CORE_BASE")" || return $?
+    install -d -m 0755 "$target_dir"
+    install -m 0755 "$backup_bin" "$target_dir/xray"
+    [[ ${RM_TEST_MODE} == 1 ]] || chown -R root:root "$target_dir"
+  fi
+
+  if [[ -f $RM_XRAY_CONFIG ]]; then
+    xray_test_config "$RM_XRAY_CONFIG" "$target_dir/xray" || return "$RM_RC_PRECONDITION"
+    xray_test_config_as_service_user "$RM_XRAY_CONFIG" "$target_dir/xray" || return "$RM_RC_PRECONDITION"
+  fi
+
+  service=$(update_xray_service_state_json)
+  enabled=$(jq -r .enabled <<<"$service")
+  active=$(jq -r .active <<<"$service")
+  xray_core_set_current_link "$target_version" || return "$RM_RC_INTERNAL"
+  update_apply_xray_service_state "$enabled" "$active" || rc=$?
+  if ((rc!=0)); then
+    rm_error "旧核心服务恢复失败，重新切回 $current_version"
+    update_restore_core_state "$current_version" "$enabled" "$active" || return "$RM_RC_RECOVERY_INCOMPLETE"
+    return "$RM_RC_APPLY_ROLLED_BACK"
+  fi
+  state_update_filter '.core_version=$v' --arg v "$target_version" || rc=$?
+  if ((rc!=0)); then
+    rm_error "旧核心状态提交失败，重新切回 $current_version"
+    update_restore_core_state "$current_version" "$enabled" "$active" || return "$RM_RC_RECOVERY_INCOMPLETE"
+    return "$RM_RC_APPLY_ROLLED_BACK"
+  fi
+
+  jq -n --arg from "$current_version" --arg to "$target_version" --arg backup "$backup_id"     --argjson restarted "$active"     '{status:"rolled_back",from_core_version:$from,core_version:$to,rollback_backup:$backup,
+      shared_service_restarted:$restarted,line_end_to_end:"unverified",
+      note:"核心已回退并恢复原服务启停状态；线路端是否重新兼容仍需真实连接验证。"}'
 }

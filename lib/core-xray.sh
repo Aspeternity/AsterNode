@@ -72,40 +72,127 @@ _xray_zip_safe() {
   fi
 }
 
-xray_core_install() {
+xray_core_verify_prepared() {
+  local version=$1 arch asset expected_url expected_zip dest recorded_zip recorded_binary actual_binary
+  arch=$(xray_arch) || return "$RM_RC_PRECONDITION"
+  asset=$(xray_asset_json "$version" "$arch") || return "$RM_RC_PRECONDITION"
+  expected_url=$(jq -r .url <<<"$asset")
+  expected_zip=$(jq -r .sha256 <<<"$asset")
+  dest="$RM_CORE_BASE/$version"
+
+  [[ -d $dest && ! -L $dest && -f $dest/xray && -x $dest/xray && ! -L $dest/xray ]] || return "$RM_RC_PRECONDITION"
+  [[ -f $dest/SHA256SUM && ! -L $dest/SHA256SUM &&
+     -f $dest/SOURCE && ! -L $dest/SOURCE &&
+     -f $dest/BINARY.SHA256 && ! -L $dest/BINARY.SHA256 ]] || return "$RM_RC_PRECONDITION"
+
+  recorded_zip=$(awk 'NR==1{print $1}' "$dest/SHA256SUM")
+  [[ $recorded_zip == "$expected_zip" && $(cat "$dest/SOURCE") == "$expected_url" ]] || return "$RM_RC_PRECONDITION"
+  recorded_binary=$(awk 'NR==1{print $1}' "$dest/BINARY.SHA256")
+  [[ $recorded_binary =~ ^[0-9a-f]{64}$ ]] || return "$RM_RC_PRECONDITION"
+  actual_binary=$(rm_sha256_file "$dest/xray")
+  [[ $actual_binary == "$recorded_binary" ]]
+}
+
+xray_core_prepare() {
   local version=${1:-$(xray_default_version)}
   rm_require_root || return $?
   xray_check_external_conflict || return $?
-  local arch asset url expected expected_size dest tmp zip actual
+  local arch asset url expected expected_size dest tmp zip actual stage binary_sha
   arch=$(xray_arch) || { rm_error '仅支持 x86_64/ARM64 核心安装'; return "$RM_RC_PRECONDITION"; }
   asset=$(xray_asset_json "$version" "$arch") || { rm_error "版本或架构未在兼容矩阵中验证: $version/$arch"; return "$RM_RC_PRECONDITION"; }
-  url=$(jq -r .url <<<"$asset"); expected=$(jq -r .sha256 <<<"$asset"); expected_size=$(jq -r .size <<<"$asset")
+  url=$(jq -r .url <<<"$asset")
+  expected=$(jq -r .sha256 <<<"$asset")
+  expected_size=$(jq -r .size <<<"$asset")
   dest="$RM_CORE_BASE/$version"
-  if [[ -x $dest/xray ]]; then rm_info "Xray $version 已安装，保持现有文件。"; return 0; fi
+
+  if [[ -e $dest || -L $dest ]]; then
+    if xray_core_verify_prepared "$version"; then
+      rm_info "Xray $version 已存在且本地完整性记录有效，保持现有文件。"
+      return 0
+    fi
+    rm_error "Xray $version 版本目录已存在但无法验证，拒绝静默覆盖。"
+    return "$RM_RC_PRECONDITION"
+  fi
+
   rm_require_cmds curl sha256sum unzip || return $?
-  tmp=$(rm_safe_tmpdir); zip="$tmp/xray.zip"
+  tmp=$(rm_safe_tmpdir)
+  zip="$tmp/xray.zip"
   rm_info "下载官方 Xray $version ($arch)..."
   if ! curl -fL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 180 --retry 2 --output "$zip" "$url"; then
-    rm -rf "$tmp"; return "$RM_RC_NETWORK"
+    rm -rf "$tmp"
+    return "$RM_RC_NETWORK"
   fi
-  if [[ $(stat -c '%s' "$zip") -ne $expected_size ]]; then rm_error '下载大小与发布元数据不符'; rm -rf "$tmp"; return "$RM_RC_NETWORK"; fi
+  if [[ $(stat -c '%s' "$zip") -ne $expected_size ]]; then
+    rm_error '下载大小与发布元数据不符'
+    rm -rf "$tmp"
+    return "$RM_RC_NETWORK"
+  fi
   actual=$(rm_sha256_file "$zip")
-  if [[ $actual != "$expected" ]]; then rm_error 'Xray SHA-256 校验失败'; rm -rf "$tmp"; return "$RM_RC_NETWORK"; fi
+  if [[ $actual != "$expected" ]]; then
+    rm_error 'Xray SHA-256 校验失败'
+    rm -rf "$tmp"
+    return "$RM_RC_NETWORK"
+  fi
   _xray_zip_safe "$zip" || { local rc=$?; rm -rf "$tmp"; return "$rc"; }
-  mkdir -p "$tmp/unpacked"; unzip -q "$zip" -d "$tmp/unpacked"
-  [[ -f $tmp/unpacked/xray ]] || { rm_error '发行包缺少 xray 二进制'; rm -rf "$tmp"; return "$RM_RC_PRECONDITION"; }
-  install -d -m 0755 "$dest"
-  install -m 0755 "$tmp/unpacked/xray" "$dest/xray"
-  printf '%s  %s\n' "$expected" "$(jq -r .name <<<"$asset")" >"$dest/SHA256SUM"
-  printf '%s\n' "$url" >"$dest/SOURCE"
-  chmod 0644 "$dest/SHA256SUM" "$dest/SOURCE"
-  mkdir -p "$RM_CORE_BASE"
-  ln -sfn "$dest" "$RM_CORE_CURRENT.tmp"
-  mv -Tf "$RM_CORE_CURRENT.tmp" "$RM_CORE_CURRENT"
-  if [[ ${RM_TEST_MODE} != 1 ]]; then chown -R root:root "$dest" "$RM_CORE_CURRENT" 2>/dev/null || true; fi
+  mkdir -p "$tmp/unpacked"
+  unzip -q "$zip" -d "$tmp/unpacked"
+  [[ -f $tmp/unpacked/xray && ! -L $tmp/unpacked/xray ]] || {
+    rm_error '发行包缺少普通 xray 二进制'
+    rm -rf "$tmp"
+    return "$RM_RC_PRECONDITION"
+  }
+
+  rm_assert_no_symlink_components "$(dirname "$RM_CORE_BASE")" || { local rc=$?; rm -rf "$tmp"; return "$rc"; }
+  [[ ! -L $RM_CORE_BASE ]] || { rm -rf "$tmp"; return "$RM_RC_PRECONDITION"; }
+  install -d -m 0755 "$RM_CORE_BASE"
+  stage="$RM_CORE_BASE/.${version}.prepare.$$"
+  [[ ! -e $stage && ! -L $stage ]] || { rm -rf "$tmp"; return "$RM_RC_PRECONDITION"; }
+  install -d -m 0755 "$stage"
+  install -m 0755 "$tmp/unpacked/xray" "$stage/xray"
+  binary_sha=$(rm_sha256_file "$stage/xray")
+  printf '%s  %s\n' "$expected" "$(jq -r .name <<<"$asset")" >"$stage/SHA256SUM"
+  printf '%s\n' "$url" >"$stage/SOURCE"
+  printf '%s  xray\n' "$binary_sha" >"$stage/BINARY.SHA256"
+  chmod 0644 "$stage/SHA256SUM" "$stage/SOURCE" "$stage/BINARY.SHA256"
+  [[ ${RM_TEST_MODE} == 1 ]] || chown -R root:root "$stage"
+
+  if ! mv -T "$stage" "$dest"; then
+    rm -rf "$stage" "$tmp"
+    return "$RM_RC_INTERNAL"
+  fi
   rm -rf "$tmp"
-  state_init >/dev/null
+  xray_core_verify_prepared "$version" || {
+    rm_error '安装后的 Xray 本地完整性校验失败'
+    return "$RM_RC_PRECONDITION"
+  }
+}
+
+xray_core_set_current_link() {
+  local version=$1 dest="$RM_CORE_BASE/$version"
+  [[ -d $dest && ! -L $dest && -x $dest/xray && ! -L $dest/xray ]] || return "$RM_RC_PRECONDITION"
+  ln -sfn "$dest" "$RM_CORE_CURRENT.tmp" || return "$RM_RC_INTERNAL"
+  mv -Tf "$RM_CORE_CURRENT.tmp" "$RM_CORE_CURRENT" || {
+    rm -f "$RM_CORE_CURRENT.tmp"
+    return "$RM_RC_INTERNAL"
+  }
+  [[ $(readlink -f "$RM_CORE_CURRENT" 2>/dev/null || true) == "$dest" ]] || return "$RM_RC_INTERNAL"
+}
+
+xray_core_activate() {
+  local version=$1
+  xray_core_verify_prepared "$version" || {
+    rm_error "Xray $version 未通过受管版本完整性校验"
+    return "$RM_RC_PRECONDITION"
+  }
+  xray_core_set_current_link "$version" || return $?
+  state_init >/dev/null || return $?
   state_update_filter '.core_version=$v' --arg v "$version"
+}
+
+xray_core_install() {
+  local version=${1:-$(xray_default_version)}
+  xray_core_prepare "$version" || return $?
+  xray_core_activate "$version"
 }
 
 xray_service_install() {
