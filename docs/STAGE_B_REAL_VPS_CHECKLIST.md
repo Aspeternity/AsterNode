@@ -69,7 +69,7 @@ tested_at:
 - 受管 REALITY 入站必须带持久化、随机且收紧的 `limitFallbackUpload/Download`。未限速窗口控制在几百 KiB 量级，降低攻击者通过反复新建 fallback 连接偷跑带宽的收益；参数仍随机化，避免所有安装使用同一固定指纹。
 - Target 安全探测依赖 `dig`；安装器在 Debian/Ubuntu 上自动通过 `dnsutils` 补齐。缺少或查询失败时不得降级为安全。
 - Target 不得指回本节点监听端点形成循环。
-- Cloudflare 等共享 CDN 候选可以保留作对照，但默认不参与推荐，并需记录未认证回落转发的滥用风险判断。
+- Cloudflare、Akamai、Fastly 等共享 CDN/边缘候选可以保留作对照，但默认不参与推荐，并需记录未认证回落转发的滥用风险判断；真实 VPS 新发现的共享边缘后缀必须补入版本化规则与回归测试。
 
 ## B-VPS-05：真实客户端（T24）
 

@@ -45,10 +45,10 @@
     {
       "target": "www.mozilla.org:443",
       "sni": "www.mozilla.org",
-      "recommendable": true,
+      "recommendable": false,
       "official_reference": false,
-      "risk_class": "standard",
-      "note": "通用候选；必须在当前 VPS 实测"
+      "risk_class": "shared-edge-known",
+      "note": "真实 VPS 已观测到 www-mozilla.fastly-edge.com 共享 Fastly 边缘链；默认不参与推荐"
     },
     {
       "target": "www.bing.com:443",
@@ -104,6 +104,7 @@
     "cloudflare.com",
     "fastly.net",
     "fastlylb.net",
+    "fastly-edge.com",
     "azureedge.net",
     "azurefd.net",
     "trafficmanager.net",

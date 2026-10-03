@@ -15,7 +15,9 @@ assert_json "$(cat "$RM_TARGETS_FILE")" '
   (any(.candidates[]; .sni=="dl.google.com" and .official_reference==true and .recommendable==true)) and
   (any(.candidates[]; .sni=="www.cloudflare.com" and .recommendable==false and .risk_class=="shared-cdn-forwarding")) and
   (any(.candidates[]; .sni=="www.bing.com" and .recommendable==false and .risk_class=="shared-edge-known")) and
+  (any(.candidates[]; .sni=="www.mozilla.org" and .recommendable==false and .risk_class=="shared-edge-known")) and
   (any(.shared_edge_suffixes[]; .=="edgekey.net")) and
+  (any(.shared_edge_suffixes[]; .=="fastly-edge.com")) and
   (any(.shared_edge_suffixes[]; .=="akamaiedge.net")) and
   (all(.candidates[]; (.sni|ascii_downcase|contains("apple")|not)))
 '

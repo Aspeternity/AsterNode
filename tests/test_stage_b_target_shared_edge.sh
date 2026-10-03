@@ -27,6 +27,13 @@ case "$args" in
   *"-x 23.210.216.158")
     printf '%s\n' 'a23-210-216-158.deploy.static.akamaitechnologies.com.'
     ;;
+  *"CNAME www.mozilla.org")
+    printf '%s\n' 'www.mozilla.org. 60 IN CNAME www-mozilla.fastly-edge.com.'
+    ;;
+  *"CNAME www-mozilla.fastly-edge.com")
+    ;;
+  *"-x 151.101.131.19")
+    ;;
   *)
     ;;
 esac
@@ -44,10 +51,17 @@ assert_json "$risk" '
   any(.matches[]; .suffix=="akamaitechnologies.com")
 '
 
+fastly=$(target_dns_shared_edge_json www.mozilla.org 151.101.131.19)
+assert_json "$fastly" '
+  .status=="high" and
+  (.cname_chain|length)==1 and
+  any(.matches[]; .source=="cname" and .suffix=="fastly-edge.com")
+'
+
 safe=$(target_dns_shared_edge_json origin.example 192.0.2.10)
 assert_json "$safe" '
   .status=="low" and
   (.matches|length)==0
 '
 
-pass 'Stage B Target DNS CNAME/PTR shared-edge gate blocks Akamai-style chains'
+pass 'Stage B Target DNS CNAME/PTR shared-edge gate blocks Akamai and Fastly edge chains'

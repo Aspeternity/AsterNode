@@ -8,6 +8,7 @@
 - Hardened the anti-abuse gate with fail-closed CNAME/PTR shared-edge detection backed by a versioned CDN suffix list plus broader cross-SNI probes; observed Bing/Akamai-style trafficmanager.net -> edgekey.net -> akamaiedge.net chains are blocked from recommendation.
 - Tightened randomized fallback limits from multi-megabyte unthrottled windows to hundreds-of-KiB ranges, reducing reconnect-based fallback bandwidth theft while preserving per-node parameter variation.
 - Added dig/dnsutils to bootstrap dependency coverage so shared-edge DNS classification cannot silently degrade on minimal Debian/Ubuntu installs.
+- Added fastly-edge.com to shared-edge classification and marked www.mozilla.org as a known shared-edge diagnostic candidate after real VPS evidence showed www-mozilla.fastly-edge.com; Mozilla is no longer eligible for automatic Target recommendation.
 - Added signed, manifest-verified manager release packages with pinned trust-anchor handling and controlled version-directory switching.
 - Added a generator for fixed-version HTTPS bootstrap scripts that pin both package and release-public-key SHA-256 values and reject unsafe archive paths/types before extraction.
 - Manager package installation now requires the fixed outer package SHA-256; the bootstrap never follows floating `main` or `latest`.
