@@ -51,7 +51,10 @@ backup_create() {
 }
 
 backup_verify() {
-  local id=$1 root="$RM_BACKUP_DIR/$id" manifest="$RM_BACKUP_DIR/$id/manifest.json" count i p sha actual
+  local id root manifest count i p sha actual
+  id=$1
+  root="$RM_BACKUP_DIR/$id"
+  manifest="$root/manifest.json"
   [[ -d $root && -f $manifest && ! -L $root && ! -L $manifest ]] || return "$RM_RC_PRECONDITION"
   jq -e --argjson schema "$RM_SCHEMA_VERSION" '.schema_version==$schema and (.files|type=="array")' "$manifest" >/dev/null || return "$RM_RC_PRECONDITION"
   count=$(jq '.files|length' "$manifest")
@@ -65,7 +68,10 @@ backup_verify() {
 }
 
 backup_restore_local() {
-  local id=$1 root="$RM_BACKUP_DIR/$id" manifest="$RM_BACKUP_DIR/$id/manifest.json" tx count i p mode owner uid gid rc=0
+  local id root manifest tx count i p mode owner uid gid rc=0
+  id=$1
+  root="$RM_BACKUP_DIR/$id"
+  manifest="$root/manifest.json"
   rm_require_root || return $?; backup_verify "$id" || { rm_error '备份校验失败'; return "$RM_RC_PRECONDITION"; }
   # Validate backed-up runtime config before touching the active one when possible.
   if [[ -f "$root/files/etc/relay-manager-xray/config.json" && -x $(xray_current_binary) ]]; then xray_test_config "$root/files/etc/relay-manager-xray/config.json" || return $?; fi
@@ -86,7 +92,9 @@ backup_restore_local() {
 }
 
 backup_restore_nodes_only() {
-  local id=$1 root="$RM_BACKUP_DIR/$id" oldstate current candidate tmpdir
+  local id root oldstate current candidate tmpdir
+  id=$1
+  root="$RM_BACKUP_DIR/$id"
   backup_verify "$id" || return "$RM_RC_PRECONDITION"
   oldstate="$root/files/etc/relay-manager/state.json"; [[ -f $oldstate ]] || return "$RM_RC_PRECONDITION"
   state_init >/dev/null; current="$RM_STATE_FILE"; tmpdir=$(rm_safe_tmpdir); candidate="$tmpdir/state.json"
