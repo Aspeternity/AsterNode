@@ -74,8 +74,11 @@ grep -Fq 'backend = polling' "$cfg" || fail 'file backend not rendered'
 grep -Fq 'logpath = /var/log/auth.log' "$cfg" || fail 'file backend logpath missing'
 grep -Fq 'port = 22,2222' "$cfg" || fail 'actual SSH ports not rendered'
 grep -Fq 'banaction = ufw' "$cfg" || fail 'active UFW action not selected'
-grep -Fq 'ignoreip = 127.0.0.1/8 ::1 203.0.113.5 2001:db8:0:0:0:0:0:5' "$cfg" ||
-  fail 'explicit management ignore sources were not normalized'
+ignore_line=$(grep '^ignoreip = ' "$cfg")
+for expected in 127.0.0.1/8 ::1 203.0.113.5 2001:db8:0:0:0:0:0:5; do
+  grep -Fqw "$expected" <<<"$ignore_line" ||
+    fail "explicit management ignore source missing after normalization: $expected"
+done
 if grep -Fq '198.51.100.9' "$cfg"; then
   fail 'an unrelated upstream whitelist leaked into Fail2ban ignoreip'
 fi
