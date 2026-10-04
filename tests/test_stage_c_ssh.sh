@@ -40,6 +40,11 @@ set -Eeuo pipefail
 case "${1:-}" in
   -T)
     cat "${RM_SSH_EFFECTIVE_FILE:?}"
+    if [[ ${RM_SSH_TEST_LONG_EFFECTIVE:-0} == 1 ]]; then
+      for ((i=0;i<10000;i++)); do
+        printf 'unusedoption%s value\n' "$i"
+      done
+    fi
     ;;
   -t)
     exit "${RM_SSH_TEST_SYNTAX_RC:-0}"
@@ -117,7 +122,12 @@ assert_json "$verify_cmd" '
 '
 
 export RM_SSH_TEST_MANUAL_VERIFY=VERIFY
+# Real sshd -T emits much more output than this fixture. Keep writing after the
+# matching pubkey line so the old grep -q pipeline would hit SIGPIPE under
+# set -o pipefail; verification must still succeed.
+export RM_SSH_TEST_LONG_EFFECTIVE=1
 verified=$(ssh_mark_key_verified root "$fp")
+unset RM_SSH_TEST_LONG_EFFECTIVE
 assert_json "$verified" '.status=="manual_new_connection_verified"'
 assert_eq "$fp" "$(jq -r .fingerprint <<<"$verified")" 'verified fingerprint mismatch'
 jq -e --arg fp "$fp" '
