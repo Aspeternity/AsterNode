@@ -393,13 +393,15 @@ case "$cmd" in
     ;;
   reconcile)
     rm_require_root || exit $?
-    tx_recover_pending || {
+    tx_reconcile_pending || {
       rc=$?
       [[ $rc == "$RM_RC_RECOVERY_INCOMPLETE" ]] && exit "$rc"
     }
     upstream_rotation_reconcile_expired
     fw_reconcile_expired
-    maintenance_prune_safe >/dev/null
+    if ! tx_has_conflict; then
+      maintenance_prune_safe >/dev/null
+    fi
     ;;
   help|-h|--help)
     help_cmd
