@@ -120,6 +120,19 @@ assert_json "$status" '
   .framework_integrity.status=="ok" and .isolation_verified==false
 '
 
+# Real UFW writes human-readable "Rule added" lines to stdout. Helpers whose
+# stdout is consumed as JSON must redirect that chatter away from stdout.
+export RM_UFW_TEST_STDOUT=1
+ensure_stderr="$root/ufw-ensure-stderr.txt"
+ensure_json=$(fw_ensure_ssh_port 61235 2>"$ensure_stderr")
+unset RM_UFW_TEST_STDOUT
+assert_json "$ensure_json" '.status=="added" and .port==61235 and .added==true'
+grep -Fq 'Rule added' "$ensure_stderr" || fail 'UFW human output was not preserved on stderr'
+if grep -Fq 'Rule added' <<<"$ensure_json"; then
+  fail 'UFW human output polluted fw_ensure_ssh_port JSON stdout'
+fi
+fw_release_ssh_port 61235 >/dev/null 2>&1
+
 state_update_filter '.nodes=[{
   node_id:"node-fw",name:"fw",listen_address:"::",listen_port:443,
   enabled:true,autostart:true,access_mode:"whitelist"
