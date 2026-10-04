@@ -14,10 +14,15 @@ source "$BASE_DIR/lib/target.sh"
 source "$BASE_DIR/lib/remove.sh"
 source "$BASE_DIR/lib/maintenance.sh"
 
-mutation_guard() {
+mutation_access_guard() {
   [[ ${RM_TEST_MODE} == 1 ]] && return 0
   rm_require_root || return $?
   rm_tty_available || { rm_error '首版不支持无交互批量修改；未检测到 TTY，停止。'; return "$RM_RC_PRECONDITION"; }
+}
+
+mutation_guard() {
+  mutation_access_guard || return $?
+  [[ ${RM_TEST_MODE} == 1 ]] && return 0
   tx_recover_pending || { local rc=$?; [[ $rc == $RM_RC_RECOVERY_INCOMPLETE ]] && return "$rc"; }
 }
 
@@ -188,7 +193,7 @@ ssh_cmd() {
     verify-sudo) mutation_guard; ssh_record_sudo_verified "$1";;
     root-publickey-only) mutation_guard; ssh_begin_root_policy publickey-only root;;
     root-disable) mutation_guard; ssh_begin_root_policy disable "$1";;
-    confirm) mutation_guard; ssh_confirm_pending "${1:-}";;
+    confirm) mutation_access_guard || return $?; ssh_confirm_pending "${1:-}";;
     rollback-pending) rm_require_root; ssh_rollback_pending;;
     recovery-guide) ssh_recovery_guide_json "${1:-}";;
     *) return "$RM_RC_PRECONDITION";;
