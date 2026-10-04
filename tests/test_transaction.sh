@@ -55,11 +55,44 @@ case_pending_recovery() (
   state_init
   dest="$root/etc/relay-manager/demo.conf"; printf 'old\n' > "$dest"
   src=$(mktemp); printf 'new\n' > "$src"; trap 'rm -rf "$root"; rm -f "$src"' EXIT
-  id=$(tx_begin pending); tx_stage_file "$id" "$src" "$dest"; tx_apply "$id"
+  future=$(( $(rm_epoch)+3600 ))
+  id=$(tx_begin pending "$future"); tx_stage_file "$id" "$src" "$dest"; tx_apply "$id"
   assert_eq APPLIED_PENDING "$(jq -r .status "$(tx_file "$id")")"
+  tx_recover_pending
+  assert_eq old "$(cat "$dest")" 'startup recovery stopped respecting its force-rollback contract'
+  assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$id")")"
+)
+
+case_maintenance_reconcile_deadline() (
+  set -Eeuo pipefail
+  root=$(new_test_root); trap 'rm -rf "$root"' EXIT
+  export RM_ROOT="$root" RM_TEST_MODE=1
+  source "$PROJECT_DIR/lib/transaction.sh"
+  state_init
+  dest="$root/etc/relay-manager/demo.conf"; printf 'old\n' > "$dest"
+
+  src=$(mktemp); printf 'future\n' > "$src"; trap 'rm -rf "$root"; rm -f "$src" "$src2"' EXIT
+  future=$(( $(rm_epoch)+3600 ))
+  id=$(tx_begin reconcile-future "$future")
+  tx_stage_file "$id" "$src" "$dest"
+  tx_apply "$id"
+  tx_reconcile_pending
+  assert_eq future "$(cat "$dest")" 'maintenance reconcile rolled back before deadline'
+  assert_eq APPLIED_PENDING "$(jq -r .status "$(tx_file "$id")")" 'future pending transaction was not preserved'
+
+  # Explicit/startup recovery still owns force rollback of an unfinished transaction.
   tx_recover_pending
   assert_eq old "$(cat "$dest")"
   assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$id")")"
+
+  src2=$(mktemp); printf 'expired\n' > "$src2"
+  expired=$(( $(rm_epoch)-1 ))
+  id2=$(tx_begin reconcile-expired "$expired")
+  tx_stage_file "$id2" "$src2" "$dest"
+  tx_apply "$id2"
+  tx_reconcile_pending
+  assert_eq old "$(cat "$dest")" 'expired transaction was not rolled back by maintenance reconcile'
+  assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$id2")")"
 )
 
 case_kill_window_recovery() (
@@ -111,7 +144,8 @@ case_conflicting_transaction_blocked() (
 case_commit_and_rollback
 case_stale_plan_rejected
 case_pending_recovery
+case_maintenance_reconcile_deadline
 case_kill_window_recovery
 case_external_drift_preserved
 case_conflicting_transaction_blocked
-pass 'transaction apply/commit/rollback, stale-plan, recovery, drift, conflict tests'
+pass 'transaction apply/commit/rollback, deadline-aware reconcile, stale-plan, recovery, drift, conflict tests'
