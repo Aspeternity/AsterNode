@@ -34,6 +34,29 @@ assert_json "$(cat "$RM_STATE_FILE")" '
   .nodes[0].reality.fallback_limits.download.bytes_per_sec>0
 '
 
+add_upstream="$root/add-upstream.json"
+jq -n '{
+  name:"line-added",
+  note:"existing-node upstream add regression",
+  enabled:true,
+  source_addresses:["198.51.100.10"]
+}' >"$add_upstream"
+added_upstream=$(upstream_add_from_json node-stageb "$add_upstream")
+[[ $added_upstream =~ ^up-[A-Za-z0-9._-]{1,48}$ ]] ||
+  fail "added upstream id format invalid: $added_upstream"
+assert_json "$(cat "$RM_STATE_FILE")" --arg id "$added_upstream" '
+  ([.upstreams[]|select(.upstream_id==$id)]|length)==1 and
+  (.upstreams[]|select(.upstream_id==$id)|.node_id)=="node-stageb" and
+  (.upstreams[]|select(.upstream_id==$id)|.source_addresses)==["198.51.100.10"] and
+  (([.upstreams[].uuid]|length)==([.upstreams[].uuid]|unique|length))
+'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds[0].settings.clients|length)==3'
+upstream_delete "$added_upstream"
+assert_json "$(cat "$RM_STATE_FILE")" --arg id "$added_upstream" '
+  ([.upstreams[]|select(.upstream_id==$id)]|length)==0
+'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds[0].settings.clients|length)==2'
+
 valid_replace="$root/valid-replace.json"
 jq '.node.name="sg-node-updated"' "$spec" >"$valid_replace"
 valid_result=$(node_create_or_replace_spec "$valid_replace" upsert)
