@@ -13,6 +13,7 @@ export RM_SSH_TEST_PORTS="22,2222"
 mkdir -p "$root/etc/ssh/sshd_config.d" "$root/fakebin"
 cat >"$root/etc/ssh/sshd_config" <<'EOF'
 Include /etc/ssh/sshd_config.d/*.conf
+Port 22
 Match User backup
   PasswordAuthentication no
 EOF
@@ -40,6 +41,10 @@ set -Eeuo pipefail
 case "${1:-}" in
   -T)
     cat "${RM_SSH_EFFECTIVE_FILE:?}"
+    managed="${RM_ROOT:?}/etc/ssh/sshd_config.d/00-relay-manager.conf"
+    if [[ -f $managed ]]; then
+      awk 'tolower($1)=="listenaddress"{print "listenaddress "$2}' "$managed"
+    fi
     if [[ ${RM_SSH_TEST_LONG_EFFECTIVE:-0} == 1 ]]; then
       for ((i=0;i<10000;i++)); do
         printf 'unusedoption%s value\n' "$i"
@@ -81,6 +86,23 @@ assert_json "$blocked_status" '
   any(.automation_blockers[]; startswith("startup-config-overrides:"))
 '
 export RM_SSH_TEST_EXECSTART='/usr/sbin/sshd -D'
+
+# External ListenAddress directives are ownership conflicts for automated port changes.
+cat >"$root/etc/ssh/sshd_config.d/60-external-listen.conf" <<'EOF'
+ListenAddress 127.0.0.1:22
+EOF
+listen_blocked=$(ssh_detect_json root 127.0.0.1)
+assert_json "$listen_blocked" '
+  .automation_tightening_safe==false and
+  any(.automation_blockers[]; startswith("unmanaged-listenaddress:")) and
+  (.config_trace.unmanaged_listen_addresses|length)==1
+'
+set +e
+ssh_begin_port_migration 2222 >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 10 "$rc" 'external ListenAddress did not block automated port migration'
+rm -f "$root/etc/ssh/sshd_config.d/60-external-listen.conf"
 
 # A supported local AuthorizedKeys path is accepted, while an over-broad nested /home path is not.
 assert_eq "$root/root/.ssh/authorized_keys" "$(ssh_authorized_keys_path root)"
@@ -210,10 +232,63 @@ grep -Fq 'Port 22' "$root/etc/ssh/sshd_config.d/00-relay-manager.conf" ||
   fail 'old SSH port was not preserved during migration'
 grep -Fq 'Port 2222' "$root/etc/ssh/sshd_config.d/00-relay-manager.conf" ||
   fail 'new SSH port was not added during migration'
+grep -Fq 'ListenAddress 0.0.0.0:22' "$root/etc/ssh/sshd_config.d/00-relay-manager.conf" ||
+  fail 'managed IPv4 listener for old port missing during migration'
+grep -Fq 'ListenAddress [::]:2222' "$root/etc/ssh/sshd_config.d/00-relay-manager.conf" ||
+  fail 'managed IPv6 listener for new port missing during migration'
+runtime=$(ssh_runtime_ports_json root)
+assert_json "$runtime" '.effective==[22,2222] and .actual==[22,2222]'
 
 ssh_rollback_pending
 [[ ! -e "$root/etc/ssh/sshd_config.d/00-relay-manager.conf" ]] ||
   fail 'pending SSH migration was not rolled back'
+
+# Commit a dual-port migration, then prove remove-old-port cannot falsely pass
+# while the runtime still exposes the old listener.
+migration2=$(ssh_begin_port_migration 2222)
+tx2=$(jq -r .transaction_id <<<"$migration2")
+export RM_SSH_TEST_COMMIT=COMMIT
+committed2=$(ssh_confirm_pending "$tx2")
+unset RM_SSH_TEST_COMMIT
+assert_json "$committed2" '.status=="committed_after_manual_verification"'
+assert_json "$(cat "$RM_SSH_POLICY")" '.ports==[22,2222] and (.listen_families|sort)==["ipv4","ipv6"]'
+
+set +e
+ssh_begin_remove_old_port 2222 >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 20 "$rc" 'remove-old-port did not roll back when the old runtime listener remained'
+assert_json "$(cat "$RM_SSH_POLICY")" '.ports==[22,2222]' 
+
+# When apply reaches the target listener set, confirm must still reject any
+# extra old listener that appears before COMMIT.
+export RM_SSH_TEST_PORTS=2222
+remove_pending=$(ssh_begin_remove_old_port 2222)
+remove_tx=$(jq -r .transaction_id <<<"$remove_pending")
+assert_json "$remove_pending" '.status=="pending_manual_verification" and .change=="remove-old-port"'
+assert_json "$(ssh_runtime_ports_json root)" '.effective==[2222] and .actual==[2222]'
+
+export RM_SSH_TEST_PORTS=22,2222
+export RM_SSH_TEST_COMMIT=COMMIT
+set +e
+ssh_confirm_pending "$remove_tx" >/dev/null 2>&1
+rc=$?
+set -e
+unset RM_SSH_TEST_COMMIT
+assert_eq 10 "$rc" 'SSH confirm accepted an extra old runtime listener'
+ssh_rollback_pending
+assert_json "$(cat "$RM_SSH_POLICY")" '.ports==[22,2222]'
+
+# Full success path: apply and confirm with only the retained port listening.
+export RM_SSH_TEST_PORTS=2222
+remove_pending=$(ssh_begin_remove_old_port 2222)
+remove_tx=$(jq -r .transaction_id <<<"$remove_pending")
+export RM_SSH_TEST_COMMIT=COMMIT
+remove_committed=$(ssh_confirm_pending "$remove_tx")
+unset RM_SSH_TEST_COMMIT
+assert_json "$remove_committed" '.status=="committed_after_manual_verification"'
+assert_json "$(cat "$RM_SSH_POLICY")" '.ports==[2222]'
+assert_json "$(ssh_runtime_ports_json root)" '.effective==[2222] and .actual==[2222]'
 
 # Root publickey-only requires a verified root key and enters a separate protected transaction.
 root_change=$(ssh_begin_root_policy publickey-only root)
@@ -222,4 +297,4 @@ grep -Fq 'PermitRootLogin prohibit-password' "$root/etc/ssh/sshd_config.d/00-rel
   fail 'root publickey-only policy not rendered'
 ssh_rollback_pending
 
-pass 'Stage C SSH detection, key safety, manual verification, protected migration and reboot guard'
+pass 'Stage C SSH detection, key safety, exact listener ownership, protected migration and reboot guard'
