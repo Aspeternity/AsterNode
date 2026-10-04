@@ -487,7 +487,8 @@ fw_apply_whitelist() {
     normalized=$(jq -c --arg n "$n" '.+[$n]|unique' <<<"$normalized")
   done
 
-  local desired='[]' r comment hash old current_sem desired_sem applied='[]' failed=false
+  local desired='[]' r comment hash old current_sem desired_sem
+  local present_old='[]' to_add='[]' obsolete='[]' applied='[]' failed=false
   while IFS= read -r s; do
     [[ -n $s ]] || continue
     hash=$(printf '%s' "$s" | sha256sum | cut -c1-8)
@@ -511,16 +512,40 @@ fw_apply_whitelist() {
     fi
   fi
 
-  # Specific allows are prepended so they remain before an older managed deny during updates.
+  # Build a runtime-confirmed view of the previous generation. Rules that are
+  # still desired and still present are KEEP rules: never re-add or delete them.
+  while IFS= read -r r; do
+    [[ -n $r ]] || continue
+    comment=$(jq -r .comment <<<"$r")
+    if fw_marker_present "$comment"; then
+      present_old=$(jq -c --argjson r "$r" '.+[$r]' <<<"$present_old")
+    fi
+  done < <(jq -c '.[]' <<<"$old")
+
+  to_add=$(jq -cn --argjson desired "$desired" --argjson old "$present_old" '
+    [$desired[] as $d |
+      select(([$old[] | select(.comment==$d.comment and .args==$d.args)] | length)==0) |
+      $d]
+  ')
+  obsolete=$(jq -cn --argjson desired "$desired" --argjson old "$old" '
+    [$old[] as $o |
+      select(([$desired[] | select(.comment==$o.comment and .args==$o.args)] | length)==0) |
+      $o]
+  ')
+
+  # Add only missing rules. Specific allows are prepended so they stay ahead
+  # of an existing managed deny throughout a source migration.
   while IFS= read -r r; do
     [[ -n $r ]] || continue
     if ! fw_exec_rule_json "$(jq -c .args <<<"$r")" add prepend; then failed=true; break; fi
     applied=$(jq -c --argjson r "$r" '.+[$r]' <<<"$applied")
-  done < <(jq -c '.[]|select(.kind=="allow")' <<<"$desired")
+  done < <(jq -c '.[]|select(.kind=="allow")' <<<"$to_add")
   if [[ $failed == false ]]; then
-    r=$(jq -c '.[]|select(.kind=="deny")' <<<"$desired")
-    if ! fw_exec_rule_json "$(jq -c .args <<<"$r")" add append; then failed=true
-    else applied=$(jq -c --argjson r "$r" '.+[$r]' <<<"$applied"); fi
+    while IFS= read -r r; do
+      [[ -n $r ]] || continue
+      if ! fw_exec_rule_json "$(jq -c .args <<<"$r")" add append; then failed=true; break; fi
+      applied=$(jq -c --argjson r "$r" '.+[$r]' <<<"$applied")
+    done < <(jq -c '.[]|select(.kind=="deny")' <<<"$to_add")
   fi
   if [[ $failed == true ]]; then
     while IFS= read -r r; do [[ -n $r ]] && fw_exec_rule_json "$(jq -c .args <<<"$r")" delete || true; done < <(jq -c '.[]' <<<"$applied" | tac)
@@ -531,20 +556,31 @@ fw_apply_whitelist() {
     while IFS= read -r comment; do
       if ! fw_marker_present "$comment"; then
         while IFS= read -r r; do [[ -n $r ]] && fw_exec_rule_json "$(jq -c .args <<<"$r")" delete || true; done < <(jq -c '.[]' <<<"$applied" | tac)
-        rm_error "UFW 写入后未读回受管规则: $comment"
+        rm_error "UFW 写入后未读回目标受管规则: $comment"
         return "$RM_RC_APPLY_ROLLED_BACK"
       fi
     done < <(jq -r '.[].comment' <<<"$desired")
   fi
 
-  # Now remove the old generation. If an exact rule is duplicated, one copy remains.
+  # Remove only rules that are no longer part of the desired generation.
   while IFS= read -r r; do
     [[ -n $r ]] || continue
     if ! fw_exec_rule_json "$(jq -c .args <<<"$r")" delete; then
-      rm_error '旧 UFW 受管规则未能完整清理；保留更严格的新规则并要求人工对账。'
+      rm_error '废弃 UFW 受管规则未能完整清理；保留更严格的新规则并要求人工对账。'
       return "$RM_RC_RECOVERY_INCOMPLETE"
     fi
-  done < <(jq -c '.[]' <<<"$old" | tac)
+  done < <(jq -c '.[]' <<<"$obsolete" | tac)
+
+  # A delete must never remove a retained rule. Re-read after cleanup before
+  # committing the new ownership state.
+  if [[ ${RM_TEST_MODE} != 1 ]]; then
+    while IFS= read -r comment; do
+      if ! fw_marker_present "$comment"; then
+        rm_error "UFW 差量清理后目标规则缺失: $comment；状态未提交，请人工对账。"
+        return "$RM_RC_RECOVERY_INCOMPLETE"
+      fi
+    done < <(jq -r '.[].comment' <<<"$desired")
+  fi
 
   state_update_filter '.owned_firewall_rules=([.owned_firewall_rules[]|select((.node_id//"")!=$nid)] + $rules)
     | .firewall_verifications=((.firewall_verifications//{})|del(.[$nid]))' --arg nid "$nid" --argjson rules "$desired"
