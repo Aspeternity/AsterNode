@@ -71,7 +71,7 @@ case_maintenance_reconcile_deadline() (
   state_init
   dest="$root/etc/relay-manager/demo.conf"; printf 'old\n' > "$dest"
 
-  src=$(mktemp); printf 'future\n' > "$src"; trap 'rm -rf "$root"; rm -f "$src" "$src2"' EXIT
+  src=$(mktemp); src2=''; printf 'future\n' > "$src"; trap 'rm -rf "$root"; rm -f "$src"; [[ -z $src2 ]] || rm -f "$src2"' EXIT
   future=$(( $(rm_epoch)+3600 ))
   id=$(tx_begin reconcile-future "$future")
   tx_stage_file "$id" "$src" "$dest"
