@@ -392,6 +392,40 @@ tx_recover_pending() {
   return "$rc"
 }
 
+tx_reconcile_pending() {
+  tx_init_dirs || return $?
+  local f id status deadline now rc=0 one
+  now=$(rm_epoch)
+  for f in "$RM_TX_DIR"/*/transaction.json; do
+    [[ -f $f ]] || continue
+    id=$(jq -r '.transaction_id' "$f" 2>/dev/null || true)
+    status=$(jq -r '.status' "$f" 2>/dev/null || true)
+    deadline=$(jq -r '.deadline_epoch // null' "$f" 2>/dev/null || printf null)
+    [[ -n $id && -n $status ]] || { rm_warn "损坏的事务记录: $f"; rc=$RM_RC_RECOVERY_INCOMPLETE; continue; }
+    one=0
+    case "$status" in
+      APPLIED_PENDING)
+        if [[ $deadline =~ ^[0-9]+$ ]] && ((now < deadline)); then
+          continue
+        fi
+        tx_rollback "$id" '周期维护发现事务确认期限已到或无有效期限' || one=$?
+        ;;
+      ROLLING_BACK)
+        tx_rollback "$id" '周期维护继续恢复未完成回滚' || one=$?
+        ;;
+      NEEDS_RECOVERY)
+        rm_warn "事务需要人工恢复: $id"
+        one=$RM_RC_RECOVERY_INCOMPLETE
+        ;;
+      PREPARED)
+        tx_rollback "$id" '周期维护清理未完成/未提交事务' || one=$?
+        ;;
+    esac
+    ((one==0)) || rc=$one
+  done
+  return "$rc"
+}
+
 tx_diff_summary_json() {
   local id=$1 f
   f=$(tx_file "$id"); [[ -f $f ]] || return "$RM_RC_PRECONDITION"
