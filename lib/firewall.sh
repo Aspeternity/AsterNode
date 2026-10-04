@@ -12,6 +12,12 @@ fw_ufw() {
       printf '%q ' "$@" >>"$RM_UFW_LOG"
       printf '\n' >>"$RM_UFW_LOG"
     fi
+    if [[ ${RM_UFW_TEST_STDOUT:-0} == 1 ]]; then
+      case "$*" in
+        allow*|prepend\ allow*) printf 'Rule added\nRule added (v6)\n' ;;
+        --force\ delete*) printf 'Rule deleted\nRule deleted (v6)\n' ;;
+      esac
+    fi
     [[ ${RM_UFW_TEST_FAIL:-0} == 0 ]]
     return
   fi
@@ -442,9 +448,9 @@ fw_ensure_ssh_port() {
     return 0
   fi
   rule=$(fw_rule_args_json allow any "$port" "$comment")
-  fw_exec_rule_json "$rule" add append || return "$RM_RC_APPLY_ROLLED_BACK"
+  fw_exec_rule_json "$rule" add append >&2 || return "$RM_RC_APPLY_ROLLED_BACK"
   fw_marker_present "$comment" || {
-    fw_exec_rule_json "$rule" delete || true
+    fw_exec_rule_json "$rule" delete >&2 || true
     rm_error 'UFW 写入后未能读回 SSH 规则'
     return "$RM_RC_APPLY_ROLLED_BACK"
   }
