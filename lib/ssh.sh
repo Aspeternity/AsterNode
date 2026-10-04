@@ -583,8 +583,9 @@ ssh_begin_remove_old_port() {
 }
 
 ssh_mark_key_verified() {
-  local user=$1 fingerprint=${2:-} ans inv
-  ssh_effective_text "$user" 127.0.0.1 localhost | grep -q '^pubkeyauthentication yes' || { rm_error '有效配置未允许公钥认证'; return "$RM_RC_PRECONDITION"; }
+  local user=$1 fingerprint=${2:-} ans inv eff
+  eff=$(ssh_effective_text "$user" 127.0.0.1 localhost) || { rm_error '无法读取 SSH 有效配置'; return "$RM_RC_PRECONDITION"; }
+  [[ $(ssh_effective_value "$eff" pubkeyauthentication) == yes ]] || { rm_error '有效配置未允许公钥认证'; return "$RM_RC_PRECONDITION"; }
   inv=$(ssh_key_inventory_json "$user") || return $?
   if [[ -z $fingerprint ]]; then
     [[ $(jq '.keys|length' <<<"$inv") == 1 ]] || { rm_error '存在多把公钥时必须明确提供已验证的 fingerprint。'; return "$RM_RC_PRECONDITION"; }
