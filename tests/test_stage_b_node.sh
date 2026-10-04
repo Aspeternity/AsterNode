@@ -44,17 +44,17 @@ jq -n '{
 added_upstream=$(upstream_add_from_json node-stageb "$add_upstream")
 [[ $added_upstream =~ ^up-[A-Za-z0-9._-]{1,48}$ ]] ||
   fail "added upstream id format invalid: $added_upstream"
-assert_json "$(cat "$RM_STATE_FILE")" --arg id "$added_upstream" '
+jq -e --arg id "$added_upstream" '
   ([.upstreams[]|select(.upstream_id==$id)]|length)==1 and
   (.upstreams[]|select(.upstream_id==$id)|.node_id)=="node-stageb" and
   (.upstreams[]|select(.upstream_id==$id)|.source_addresses)==["198.51.100.10"] and
   (([.upstreams[].uuid]|length)==([.upstreams[].uuid]|unique|length))
-'
+' "$RM_STATE_FILE" >/dev/null || fail 'existing-node upstream add did not preserve binding/source/unique UUID'
 assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds[0].settings.clients|length)==3'
 upstream_delete "$added_upstream"
-assert_json "$(cat "$RM_STATE_FILE")" --arg id "$added_upstream" '
+jq -e --arg id "$added_upstream" '
   ([.upstreams[]|select(.upstream_id==$id)]|length)==0
-'
+' "$RM_STATE_FILE" >/dev/null || fail 'deleted added upstream remained in state'
 assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds[0].settings.clients|length)==2'
 
 valid_replace="$root/valid-replace.json"
