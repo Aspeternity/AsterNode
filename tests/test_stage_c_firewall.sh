@@ -141,17 +141,56 @@ assert_json "$same" '.status=="already_applied_unverified"'
 assert_eq "$before" "$after" 'idempotent whitelist reapplied UFW commands'
 
 : >"$RM_UFW_LOG"
-applied=$(fw_apply_whitelist node-fw 443 198.51.100.9 2001:db8::20)
-assert_json "$applied" '.status=="applied_unverified" and (.sources|length)==2'
+old_only=$(fw_apply_whitelist node-fw 443 198.51.100.9)
+assert_json "$old_only" '.status=="applied_unverified" and .sources==["198.51.100.9"]'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw")]|length)==2 and
+  any(.owned_firewall_rules[]; (.node_id//"")=="node-fw" and .kind=="allow" and .source=="198.51.100.9") and
+  any(.owned_firewall_rules[]; (.node_id//"")=="node-fw" and .kind=="deny")
+'
+grep -Fq 'prepend allow from 198.51.100.9 to any port 443' "$RM_UFW_LOG" ||
+  fail 'initial IPv4 allow was not prepended ahead of deny'
+if grep -Fq -- '--force delete deny to any port 443' "$RM_UFW_LOG"; then
+  fail 'initial source add deleted retained deny'
+fi
+
+: >"$RM_UFW_LOG"
+transition=$(fw_apply_whitelist node-fw 443 198.51.100.9 2001:db8::20)
+assert_json "$transition" '.status=="applied_unverified" and (.sources|length)==2'
 assert_json "$(cat "$RM_STATE_FILE")" '
   ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw")]|length)==3 and
   ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw" and .kind=="allow")]|length)==2 and
   any(.owned_firewall_rules[]; (.node_id//"")=="node-fw" and .kind=="deny")
 '
-grep -Fq 'prepend allow from 198.51.100.9 to any port 443' "$RM_UFW_LOG" ||
-  fail 'specific IPv4 allow was not prepended ahead of deny'
 grep -Fq 'prepend allow from 2001:db8:0:0:0:0:0:20 to any port 443' "$RM_UFW_LOG" ||
-  fail 'normalized IPv6 allow was not prepended'
+  fail 'migration did not add the new source'
+if grep -Fq 'prepend allow from 198.51.100.9 to any port 443' "$RM_UFW_LOG"; then
+  fail 'migration re-added retained old source instead of keeping it'
+fi
+if grep -Fq -- '--force delete allow from 198.51.100.9 to any port 443' "$RM_UFW_LOG"; then
+  fail 'OLD -> OLD+NEW migration deleted retained old source'
+fi
+if grep -Fq -- '--force delete deny to any port 443' "$RM_UFW_LOG"; then
+  fail 'OLD -> OLD+NEW migration deleted retained deny'
+fi
+
+: >"$RM_UFW_LOG"
+new_only=$(fw_apply_whitelist node-fw 443 2001:db8::20)
+assert_json "$new_only" '.status=="applied_unverified" and (.sources|length)==1'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw")]|length)==2 and
+  ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw" and .kind=="allow")]|length)==1 and
+  any(.owned_firewall_rules[]; (.node_id//"")=="node-fw" and .kind=="allow" and .source=="2001:db8:0:0:0:0:0:20") and
+  any(.owned_firewall_rules[]; (.node_id//"")=="node-fw" and .kind=="deny")
+'
+grep -Fq -- '--force delete allow from 198.51.100.9 to any port 443' "$RM_UFW_LOG" ||
+  fail 'OLD+NEW -> NEW migration did not remove old source'
+if grep -Fq 'prepend allow from 2001:db8:0:0:0:0:0:20 to any port 443' "$RM_UFW_LOG"; then
+  fail 'OLD+NEW -> NEW migration re-added retained new source'
+fi
+if grep -Fq -- '--force delete deny to any port 443' "$RM_UFW_LOG"; then
+  fail 'OLD+NEW -> NEW migration deleted retained deny'
+fi
 
 export RM_UFW_TEST_VERIFY=VERIFY
 verified=$(fw_mark_whitelist_verified node-fw)
