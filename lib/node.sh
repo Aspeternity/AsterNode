@@ -608,7 +608,7 @@ node_rotate_reality_keys() {
 }
 
 upstream_add_from_json() {
-  local nid=$1 input=$2 tmpdir candidate obj upid uuid xray i count addr norm t2 rc
+  local nid=$1 input=$2 tmpdir candidate obj validate_spec upid uuid xray i count addr norm t2 rc
   state_init >/dev/null
   state_get_node "$nid" >/dev/null || { rm_error '节点不存在'; return "$RM_RC_PRECONDITION"; }
   rm_json_valid "$input" || return "$RM_RC_PRECONDITION"
@@ -638,9 +638,14 @@ upstream_add_from_json() {
     mv "$t2" "$obj"
   done
   [[ $upid =~ ^up-[A-Za-z0-9._-]{1,48}$ ]] || { rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
-  if ! "$RM_PROTOCOL_VR" validate <(jq --arg nid "$nid" --slurpfile u "$obj" '
+  validate_spec="$tmpdir/validate-spec.json"
+  jq --arg nid "$nid" --slurpfile u "$obj" '
     (.nodes[]|select(.node_id==$nid)) as $n | {node:$n,upstreams:$u}
-  ' "$RM_STATE_FILE"); then
+  ' "$RM_STATE_FILE" >"$validate_spec" || {
+    rm -rf "$tmpdir"
+    return "$RM_RC_PRECONDITION"
+  }
+  if ! "$RM_PROTOCOL_VR" validate "$validate_spec"; then
     rm -rf "$tmpdir"
     return "$RM_RC_PRECONDITION"
   fi
