@@ -374,9 +374,46 @@ EOF
   assert_json "$status" '
     .start_mode=="socket" and
     .effective.ports==[22] and
-    .actual_listen_ports==[22]
+    .actual_listen_ports==[22] and
+    .automation_tightening_safe==true and
+    (.automation_blockers|length)==0 and
+    .startup.status=="ok" and
+    .startup.safe_for_automatic_tightening==true
   '
+  assert_eq ssh.service "$(ssh_startup_service_unit_name)"     'Accept=no socket activation did not resolve the paired ssh.service'
   assert_json "$(ssh_listen_families_json)" 'sort==["ipv4","ipv6"]'
+
+  # Ubuntu 24.04 uses ssh.socket Accept=no with ssh.service as the backing
+  # daemon. Startup overrides on that service must still block automation.
+  export RM_SSH_TEST_EXECSTART='/usr/sbin/sshd -D -p 2200'
+  blocked=$(ssh_detect_json root 127.0.0.1)
+  assert_json "$blocked" '
+    .automation_tightening_safe==false and
+    any(.automation_blockers[]; contains("startup-config-overrides:port-override(-p)"))
+  '
+  export RM_SSH_TEST_EXECSTART='/usr/sbin/sshd -D -o PasswordAuthentication=no'
+  blocked=$(ssh_detect_json root 127.0.0.1)
+  assert_json "$blocked" '
+    .automation_tightening_safe==false and
+    any(.automation_blockers[]; contains("startup-config-overrides:option-override(-o)"))
+  '
+  export RM_SSH_TEST_EXECSTART='/usr/sbin/sshd -D'
+
+  # Accept=yes requires an instantiated/template backing service model that
+  # is not safely resolved by the first release. Remain fail-closed.
+  export RM_SSH_TEST_SOCKET_ACCEPT=yes
+  blocked=$(ssh_detect_json root 127.0.0.1)
+  assert_json "$blocked" '
+    .startup.status=="unverified" and
+    .automation_tightening_safe==false and
+    any(.automation_blockers[]; .=="startup-arguments-unverified")
+  '
+  export RM_SSH_TEST_SOCKET_ACCEPT=no
+
+  # An explicit Accept=no Service= is authoritative when present.
+  export RM_SSH_TEST_SOCKET_SERVICE=custom-ssh.service
+  assert_eq custom-ssh.service "$(ssh_startup_service_unit_name)"     'explicit socket Service= was not selected as the backing daemon'
+  unset RM_SSH_TEST_SOCKET_SERVICE
 
   migration=$(ssh_begin_port_migration 2222)
   tx=$(jq -r .transaction_id <<<"$migration")
