@@ -7,6 +7,8 @@ root=$(new_test_root)
 work=$(mktemp -d)
 trap 'rm -rf "$root" "$work"' EXIT
 export RM_ROOT="$root" RM_TEST_MODE=1 RM_SYSTEMCTL_LOG="$root/systemctl.log"
+export RM_UFW_LOG="$root/ufw.log"
+: >"$RM_UFW_LOG"
 
 mkdir -p "$root/etc"
 printf '0123456789abcdef0123456789abcdef\n' >"$root/etc/machine-id"
@@ -41,6 +43,14 @@ own_file /etc/systemd/system/relay-manager-temp-node-fw.service 'managed tempora
 own_file /etc/systemd/system/relay-manager-temp-node-fw.timer 'managed temporary access timer'
 state_add_owned_service relay-manager-temp-node-fw.service
 state_add_owned_service relay-manager-temp-node-fw.timer
+
+orphan_rule=$(fw_rule_args_json allow any 4444 'relay-manager:orphan:temporary:9999999999')
+state_update_filter '.temporary_opens += [{
+  node_id:"orphan",
+  deadline_epoch:9999999999,
+  rule_args:$rule,
+  unit:"relay-manager-temp-orphan"
+}]' --argjson rule "$orphan_rule"
 
 own_file /etc/ssh/sshd_config.d/00-relay-manager.conf 'PasswordAuthentication no'
 own_file /etc/fail2ban/jail.d/relay-manager-sshd.local '[relay-manager-sshd]'
@@ -122,6 +132,10 @@ grep -Fq 'disable --now relay-manager-temp-node-fw.timer' "$RM_SYSTEMCTL_LOG" ||
   fail 'owned temporary access timer was not disabled during uninstall'
 grep -Fq 'stop relay-manager-temp-node-fw.service' "$RM_SYSTEMCTL_LOG" ||
   fail 'owned temporary access service was not stopped during uninstall'
+grep -Fq 'disable relay-manager-temp-orphan.timer' "$RM_SYSTEMCTL_LOG" ||
+  fail 'orphan temporary access timer was not disabled during uninstall'
+grep -Fq -- '--force delete allow to any port 4444 proto tcp comment relay-manager:orphan:temporary:9999999999' "$RM_UFW_LOG" ||
+  fail 'orphan temporary public allow was not removed during uninstall'
 
 jq -e --arg foreign_manager "$foreign_version" --arg foreign_core "$foreign_core" '
   (.preserved_paths|index($foreign_manager))!=null and
