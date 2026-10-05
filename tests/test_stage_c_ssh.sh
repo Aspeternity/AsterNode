@@ -519,4 +519,120 @@ EOF
 
 case_socket_mode_and_boot_guard
 
-pass 'Stage C SSH detection, key safety, exact listener ownership, protected migration and reboot guard'
+case_mid_apply_ssh_recovery() (
+  set -Eeuo pipefail
+  crash_root=$(new_test_root)
+  trap 'rm -rf "$crash_root"' EXIT
+
+  export RM_ROOT="$crash_root" RM_TEST_MODE=1
+  export RM_SYSTEMCTL_LOG="$crash_root/systemctl.log"
+  export RM_SSH_TEST_MODE="service:ssh"
+  export RM_SSH_TEST_PORTS=22
+
+  source "$PROJECT_DIR/lib/ssh.sh"
+  state_init
+  : >"$RM_SYSTEMCTL_LOG"
+
+  mkdir -p "$(dirname "$RM_SSH_POLICY")" "$(dirname "$RM_SSH_DROPIN")" "$(dirname "$RM_SSH_SOCKET_DROPIN")"
+  printf 'old-policy\n' >"$RM_SSH_POLICY"
+  printf 'old-dropin\n' >"$RM_SSH_DROPIN"
+  chmod 0600 "$RM_SSH_POLICY"
+  chmod 0644 "$RM_SSH_DROPIN"
+
+  prepare_mid_apply_ssh_tx() {
+    local apply_count=$1 tag=$2 tmp tx i staged dest sha
+    tmp=$(rm_safe_tmpdir)
+    printf 'new-policy-%s\n' "$tag" >"$tmp/policy"
+    printf 'new-dropin-%s\n' "$tag" >"$tmp/dropin"
+    printf 'new-socket-%s\n' "$tag" >"$tmp/socket"
+
+    tx=$(tx_begin "ssh-change:root-disable" "$(( $(rm_epoch)+300 ))")
+    tx_update "$tx" '.ssh={change:"root-disable",ports:[22],listen_families:["ipv4","ipv6"],target_user:"root"}'
+    tx_stage_file "$tx" "$tmp/policy" "$RM_SSH_POLICY" 0600 root:root
+    tx_stage_file "$tx" "$tmp/dropin" "$RM_SSH_DROPIN" 0644 root:root
+    tx_stage_file "$tx" "$tmp/socket" "$RM_SSH_SOCKET_DROPIN" 0644 root:root
+
+    for ((i=0;i<apply_count;i++)); do
+      staged=$(jq -r ".files[$i].staged" "$(tx_file "$tx")")
+      dest=$(jq -r ".files[$i].destination" "$(tx_file "$tx")")
+      cp -- "$staged" "$dest"
+      sha=$(rm_sha256_file "$dest")
+      tx_update "$tx" "(.files[$i].applied_sha256=\$sha|.files[$i].phase=\"APPLIED\")" --arg sha "$sha"
+    done
+
+    rm -rf "$tmp"
+    RM_TEST_CRASH_TX=$tx
+  }
+
+  # Deterministic reproduction of Bug 11: the manager dies while the
+  # transaction is still PREPARED after only the first file was applied.
+  (
+    prepare_mid_apply_ssh_tx 1 sigkill
+    printf '%s\n' "$RM_TEST_CRASH_TX" >"$crash_root/crash-tx"
+    : >"$crash_root/crash-ready"
+    while :; do sleep 1; done
+  ) &
+  manager_pid=$!
+
+  for _ in {1..200}; do
+    [[ -f "$crash_root/crash-ready" ]] && break
+    kill -0 "$manager_pid" 2>/dev/null || fail 'mid-apply crash harness exited before SIGKILL'
+    sleep 0.01
+  done
+  [[ -f "$crash_root/crash-ready" ]] || fail 'mid-apply crash harness did not reach the deterministic crash point'
+  tx=$(cat "$crash_root/crash-tx")
+  assert_eq PREPARED "$(jq -r .status "$(tx_file "$tx")")" 'crash transaction did not remain PREPARED'
+  assert_eq APPLIED "$(jq -r '.files[0].phase' "$(tx_file "$tx")")" 'first SSH file was not applied before crash'
+  assert_eq STAGED "$(jq -r '.files[1].phase' "$(tx_file "$tx")")" 'second SSH file unexpectedly applied before crash'
+
+  kill -KILL "$manager_pid"
+  wait "$manager_pid" 2>/dev/null || true
+
+  guide=$(ssh_recovery_guide_json)
+  assert_json "$guide" --arg tx "$tx" '
+    .pending==true and
+    .transaction_id==$tx and
+    .change=="root-disable"
+  '
+
+  # This is the command executed by the deadline rollback service.
+  ssh_rollback_pending
+  assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$tx")")" 'deadline rollback missed PREPARED partial SSH apply'
+  assert_eq old-policy "$(cat "$RM_SSH_POLICY")" 'deadline rollback did not restore the first applied SSH file'
+  assert_eq old-dropin "$(cat "$RM_SSH_DROPIN")" 'deadline rollback changed an untouched SSH file'
+  [[ ! -e "$RM_SSH_SOCKET_DROPIN" ]] || fail 'deadline rollback left a staged-only socket override behind'
+
+  # Boot guard must also claim the same PREPARED mid-apply crash state.
+  prepare_mid_apply_ssh_tx 1 boot-guard
+  boot_tx=$RM_TEST_CRASH_TX
+  ssh_rollback_pending --boot-guard
+  assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$boot_tx")")" 'boot guard missed PREPARED partial SSH apply'
+  assert_eq old-policy "$(cat "$RM_SSH_POLICY")" 'boot guard did not restore PREPARED partial SSH apply'
+
+  # If rollback itself is interrupted, a second recovery pass must be
+  # idempotent. Simulate one file already restored while status persists as
+  # ROLLING_BACK, then recover twice.
+  prepare_mid_apply_ssh_tx 2 rolling-back
+  rolling_tx=$RM_TEST_CRASH_TX
+  rolling_file=$(tx_file "$rolling_tx")
+  second_dest=$(jq -r '.files[1].destination' "$rolling_file")
+  second_snap=$(jq -r '.files[1].snapshot' "$rolling_file")
+  cp -- "$second_snap" "$second_dest"
+  tx_update "$rolling_tx" '.status="ROLLING_BACK"|.failure_reason="simulated rollback interruption"'
+
+  ssh_rollback_pending --boot-guard
+  assert_eq ROLLED_BACK "$(jq -r .status "$rolling_file")" 'ROLLING_BACK recovery did not converge to ROLLED_BACK'
+  assert_eq old-policy "$(cat "$RM_SSH_POLICY")" 'ROLLING_BACK recovery did not restore remaining applied file'
+  assert_eq old-dropin "$(cat "$RM_SSH_DROPIN")" 'ROLLING_BACK recovery damaged an already-restored file'
+  first_hash=$(rm_sha256_file "$RM_SSH_POLICY")
+  second_hash=$(rm_sha256_file "$RM_SSH_DROPIN")
+
+  ssh_rollback_pending --boot-guard
+  assert_eq ROLLED_BACK "$(jq -r .status "$rolling_file")" 'second recovery changed terminal rollback state'
+  assert_eq "$first_hash" "$(rm_sha256_file "$RM_SSH_POLICY")" 'second recovery was not idempotent for SSH policy'
+  assert_eq "$second_hash" "$(rm_sha256_file "$RM_SSH_DROPIN")" 'second recovery was not idempotent for SSH drop-in'
+)
+
+case_mid_apply_ssh_recovery
+
+pass 'Stage C SSH detection, key safety, exact listener ownership, protected migration, crash recovery and reboot guard'
