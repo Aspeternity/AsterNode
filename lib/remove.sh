@@ -174,10 +174,18 @@ remove_owned_file_if_unchanged() {
 }
 
 remove_dynamic_temp_units() {
-  local name logical path
+  local logical path name
 
-  while IFS= read -r name; do
-    [[ -n $name ]] || continue
+  while IFS= read -r logical; do
+    [[ -n $logical ]] || continue
+    path=$(rm_path "$logical")
+    name=${logical##*/}
+
+    if ! remove_owned_file_matches "$path"; then
+      remove_record_preserved "$path" '动态临时访问单元已漂移或所有权无法证明'
+      continue
+    fi
+
     case "$name" in
       relay-manager-temp-*.timer)
         rm_systemctl disable --now "$name" >/dev/null 2>&1 || true
@@ -186,15 +194,7 @@ remove_dynamic_temp_units() {
         rm_systemctl stop "$name" >/dev/null 2>&1 || true
         ;;
     esac
-  done < <(jq -r '
-    .owned_services[]?
-    | select(test("^relay-manager-temp-[A-Za-z0-9_.-]+\\.(service|timer)$"))
-  ' "$RM_STATE_FILE")
-
-  while IFS= read -r logical; do
-    [[ -n $logical ]] || continue
-    path=$(rm_path "$logical")
-    remove_owned_file_if_unchanged "$path" || return $?
+    rm -f -- "$path"
   done < <(jq -r '
     .owned_files[]?.path
     | select(test("^/etc/systemd/system/relay-manager-temp-[^/]+\\.(service|timer)$"))
