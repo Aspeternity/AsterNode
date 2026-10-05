@@ -778,6 +778,9 @@ EOS
   # Public allow must precede the managed node deny, otherwise UFW first-match
   # semantics would keep it blocked.
   if ! fw_exec_rule_json "$rule" add prepend; then
+    # The UFW command may have failed after partially changing live rules.
+    # Delete the deterministic rule defensively before dropping the intent.
+    fw_exec_rule_json "$rule" delete >/dev/null 2>&1 || true
     if [[ ${RM_TEST_MODE} == 1 ]]; then
       rm_systemctl disable "$unit.timer" >/dev/null 2>&1 || true
     else
@@ -802,7 +805,11 @@ fw_expire_temp() {
     unit=$(jq -r .unit <<<"$entry")
     rule=$(jq -c .rule_args <<<"$entry")
     comment=$(jq -r '.[-1] // empty' <<<"$rule")
-    if [[ -z $comment || $(fw_marker_present "$comment"; printf '%s' $?) == 0 ]]; then
+    [[ -n $comment ]] || {
+      rm_error '临时开放记录缺少受管 UFW comment，拒绝猜测删除。'
+      return "$RM_RC_RECOVERY_INCOMPLETE"
+    }
+    if fw_marker_present "$comment"; then
       fw_exec_rule_json "$rule" delete || {
         rm_error '临时开放规则删除失败'
         return "$RM_RC_RECOVERY_INCOMPLETE"
