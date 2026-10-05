@@ -778,12 +778,12 @@ ssh_begin_port_migration() {
   ports=$(jq --argjson p "$newport" '.ports + [$p] | unique' "$policy")
   jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
 
-  if ! result=$(ssh_apply_policy_protected "$policy" port-migration root); then
+  result=$(ssh_apply_policy_protected "$policy" port-migration root) || {
     rc=$?
     [[ $fw_added == true ]] && fw_release_ssh_port "$newport" || true
     rm -rf "$tmp"
     return "$rc"
-  fi
+  }
   txid=$(jq -r .transaction_id <<<"$result")
   if [[ $fw_added == true ]]; then
     tx_update "$txid" '.ssh.firewall_added_ports=((.ssh.firewall_added_ports//[]) + [$p] | unique)' --argjson p "$newport"
