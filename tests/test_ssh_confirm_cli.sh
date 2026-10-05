@@ -36,6 +36,11 @@ ssh_confirm_pending() {
   printf 'CONFIRM %s\n' "${1:-}" >>"$CLI_TRACE"
   printf '{"status":"committed_after_manual_verification","transaction_id":"%s"}\n' "${1:-}"
 }
+
+ssh_rollback_pending() {
+  printf 'ROLLBACK %s\n' "${1:-}" >>"$CLI_TRACE"
+  printf '{"status":"rolled_back","context":"%s"}\n' "${1:-}"
+}
 EOF
 
 for lib in node firewall fail2ban backup export update target remove maintenance; do
@@ -60,4 +65,13 @@ if grep -Fxq 'RECOVER' "$trace"; then
   fail 'ssh confirm ran tx_recover_pending before confirming its pending transaction'
 fi
 
-pass 'SSH confirm CLI preserves APPLIED_PENDING transaction until explicit confirm'
+: >"$trace"
+CLI_TRACE="$trace" RM_TEST_MODE=0 \
+  "$fixture/relay-manager.sh" ssh rollback-pending --boot-guard >"$out"
+
+assert_json "$(cat "$out")" '.status=="rolled_back" and .context=="--boot-guard"'
+grep -Fxq 'ACCESS root' "$trace" || fail 'ssh rollback-pending skipped root guard'
+grep -Fxq 'ROLLBACK --boot-guard' "$trace" ||
+  fail 'ssh rollback-pending did not forward boot-guard context'
+
+pass 'SSH confirm CLI preserves pending confirm semantics and forwards boot-guard recovery context'
