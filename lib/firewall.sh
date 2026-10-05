@@ -646,18 +646,47 @@ fw_temp_unit_names() {
   printf 'relay-manager-temp-%s\n' "$safe"
 }
 
+fw_temp_lock_acquire() {
+  rm_mkdir_secure 0700 "$RM_RUN_DIR" || return $?
+  rm_require_cmds flock || return $?
+  [[ -z ${RM_FW_TEMP_LOCK_FD:-} ]] || return "$RM_RC_INTERNAL"
+  exec {RM_FW_TEMP_LOCK_FD}>"$RM_RUN_DIR/firewall-temp.lock" || return "$RM_RC_INTERNAL"
+  flock -x "$RM_FW_TEMP_LOCK_FD" || {
+    exec {RM_FW_TEMP_LOCK_FD}>&- || true
+    unset RM_FW_TEMP_LOCK_FD
+    return "$RM_RC_INTERNAL"
+  }
+}
+
+fw_temp_lock_release() {
+  if [[ -n ${RM_FW_TEMP_LOCK_FD:-} ]]; then
+    flock -u "$RM_FW_TEMP_LOCK_FD" 2>/dev/null || true
+    exec {RM_FW_TEMP_LOCK_FD}>&- || true
+    unset RM_FW_TEMP_LOCK_FD
+  fi
+}
+
 fw_temp_open() {
-  local nid=$1 minutes=${2:-10}
+  local nid=$1 minutes=${2:-10} rc=0
   [[ $minutes =~ ^[0-9]+$ ]] && ((minutes>=1 && minutes<=1440)) || return "$RM_RC_PRECONDITION"
   fw_require_manageable || return $?
+  fw_temp_lock_acquire || return $?
+  _fw_temp_open_locked "$nid" "$minutes" || rc=$?
+  fw_temp_lock_release
+  return "$rc"
+}
+
+_fw_temp_open_locked() {
+  local nid=$1 minutes=$2
+  local node port now deadline unit comment rule service timer service_path timer_path
+  local tmpdir tx rc=0 service_sha timer_sha
+
   state_init >/dev/null
   if jq -e --arg id "$nid" '.temporary_opens[]?|select(.node_id==$id)' "$RM_STATE_FILE" >/dev/null; then
     rm_error '该节点已有临时公网开放，请先等待到期或手动 expire-temp。'
     return "$RM_RC_PRECONDITION"
   fi
 
-  local node port now deadline unit comment rule service timer service_path timer_path
-  local tmpdir tx rc=0 service_sha timer_sha
   node=$(state_get_node "$nid") || return "$RM_RC_PRECONDITION"
   port=$(jq -r .listen_port <<<"$node")
   now=$(rm_epoch)
@@ -733,8 +762,8 @@ EOS
     }
   fi
 
-  # Commit the timer transaction before touching UFW. From this point onward,
-  # the timer is an intentional durable guard, not an unfinished transaction.
+  # The timer service uses the same lock, so it cannot expire the intent while
+  # this manager is still arming the UFW rule.
   if ! tx_commit "$tx"; then
     rc=$?
     tx_rollback "$tx" 'temporary access timer commit failed' || rc=$RM_RC_RECOVERY_INCOMPLETE
@@ -745,13 +774,15 @@ EOS
   service_sha=$(rm_sha256_file "$service_path")
   timer_sha=$(rm_sha256_file "$timer_path")
 
-  # Persist ownership and the cleanup intent before the live UFW allow. A
-  # SIGKILL can therefore never leave an untracked public rule behind.
+  # Persist ownership and cleanup intent before the live public allow.
   if ! state_update_filter '
-      .owned_files=((.owned_files + [
-        {path:$service_path,sha256:$service_sha},
-        {path:$timer_path,sha256:$timer_sha}
-      ]) | unique_by(.path))
+      .owned_files=(
+        [.owned_files[]? | select(.path!=$service_path and .path!=$timer_path)] +
+        [
+          {path:$service_path,sha256:$service_sha},
+          {path:$timer_path,sha256:$timer_sha}
+        ]
+      )
       | .owned_services=((.owned_services + [$service_name,$timer_name]) | unique)
       | .temporary_opens=([.temporary_opens[]|select(.node_id!=$nid)] + [{
           node_id:$nid,deadline_epoch:$deadline,rule_args:$rule,unit:$unit
@@ -778,8 +809,6 @@ EOS
   # Public allow must precede the managed node deny, otherwise UFW first-match
   # semantics would keep it blocked.
   if ! fw_exec_rule_json "$rule" add prepend; then
-    # The UFW command may have failed after partially changing live rules.
-    # Delete the deterministic rule defensively before dropping the intent.
     fw_exec_rule_json "$rule" delete >/dev/null 2>&1 || true
     if [[ ${RM_TEST_MODE} == 1 ]]; then
       rm_systemctl disable "$unit.timer" >/dev/null 2>&1 || true
@@ -796,6 +825,14 @@ EOS
 }
 
 fw_expire_temp() {
+  local nid=$1 rc=0
+  fw_temp_lock_acquire || return $?
+  _fw_expire_temp_locked "$nid" || rc=$?
+  fw_temp_lock_release
+  return "$rc"
+}
+
+_fw_expire_temp_locked() {
   local nid=$1 entry unit rule comment
   state_init >/dev/null
   unit=$(fw_temp_unit_names "$nid")
@@ -817,8 +854,8 @@ fw_expire_temp() {
     fi
   fi
 
-  # Even if the manager died after committing the timer but before persisting
-  # the state intent, the oneshot expiry can still disable its own timer.
+  # If the manager died after committing the timer but before persisting the
+  # state intent, the expiry service still disables its own timer.
   if [[ ${RM_TEST_MODE} == 1 ]]; then
     rm_systemctl disable "$unit.timer" || true
   else
