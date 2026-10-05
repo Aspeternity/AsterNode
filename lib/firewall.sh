@@ -693,8 +693,9 @@ fw_temp_cleanup_rule_if_present() {
   if fw_temp_marker_state "$marker"; then
     fw_exec_rule_json "$rule" delete || return "$RM_RC_RECOVERY_INCOMPLETE"
     return 0
+  else
+    rc=$?
   fi
-  rc=$?
   [[ $rc == 1 ]] && return 0
   return "$rc"
 }
