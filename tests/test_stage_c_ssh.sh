@@ -433,7 +433,11 @@ EOF
     fail 'socket override did not add IPv4 new-port listener'
   grep -Fxq 'ListenStream=[::]:2222' "$RM_SSH_SOCKET_DROPIN" ||
     fail 'socket override did not add IPv6 new-port listener'
-  if grep -Eq '^ListenStream=(22|2222)
+  if grep -Eq '^ListenStream=(22|2222)$' "$RM_SSH_SOCKET_DROPIN"; then
+    fail 'socket override regressed to family-ambiguous bare ports'
+  fi
+  grep -Fq 'restart socket' "$RM_SYSTEMCTL_LOG" ||
+    fail 'socket migration did not restart ssh.socket mode'
   grep -Fq 'ExecStart=/usr/local/bin/relay-manager ssh rollback-pending --boot-guard'     "$RM_SSH_BOOT_GUARD_SERVICE" ||
     fail 'boot guard was not wired to boot-guard rollback context'
   if grep -Fq -- '--boot-guard' "$RM_SSH_PROTECT_SERVICE"; then
@@ -458,7 +462,11 @@ EOF
   if grep -Eq '(^| )(enable|disable|start|stop) ssh\.socket($| )' "$RM_SYSTEMCTL_LOG"; then
     fail 'boot guard transaction rollback restored ssh.socket service state inside the guard'
   fi
-  assert_json "$(ssh_runtime_ports_json root)" '.effective==[22] and .actual==[22]'
+  assert_json "$(ssh_runtime_ports_json root)" '
+    .effective==[22] and
+    .actual==[22] and
+    .actual_families==["ipv4","ipv6"]
+  '
 
   # Ordinary/manual rollback keeps the existing behavior and explicitly
   # restarts the currently selected SSH mode after restoring files.
@@ -473,9 +481,8 @@ EOF
     .actual_families==["ipv4","ipv6"]
   '
 
-  # Fault injection: even when both target ports exist, losing one address
-  # family after restart must fail the exact runtime assertion and rollback
-  # before a pending-manual-verification result can escape.
+  # Fault injection: both ports are present, but IPv4 is missing. The apply
+  # path must rollback before returning pending_manual_verification.
   mkdir -p "$(dirname "$RM_SSH_POLICY")"
   cat >"$RM_SSH_POLICY" <<'EOF'
 {
@@ -505,46 +512,6 @@ EOF
     .actual==[22] and
     .actual_families==["ipv4","ipv6"]
   '
-)
-
-case_socket_mode_and_boot_guard
-
-pass 'Stage C SSH detection, key safety, exact listener ownership, protected migration and reboot guard'
- "$RM_SSH_SOCKET_DROPIN"; then
-    fail 'socket override regressed to family-ambiguous bare ports'
-  fi
-  grep -Fq 'restart socket' "$RM_SYSTEMCTL_LOG" ||
-    fail 'socket migration did not restart ssh.socket mode'
-  grep -Fq 'ExecStart=/usr/local/bin/relay-manager ssh rollback-pending --boot-guard'     "$RM_SSH_BOOT_GUARD_SERVICE" ||
-    fail 'boot guard was not wired to boot-guard rollback context'
-  if grep -Fq -- '--boot-guard' "$RM_SSH_PROTECT_SERVICE"; then
-    fail 'deadline rollback service was incorrectly switched to boot-guard mode'
-  fi
-  assert_json "$(ssh_runtime_ports_json root)" '.effective==[22,2222] and .actual==[22,2222]'
-
-  : >"$RM_SYSTEMCTL_LOG"
-  ssh_rollback_pending --boot-guard
-  assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$tx")")"
-  [[ ! -e "$RM_SSH_SOCKET_DROPIN" ]] ||
-    fail 'boot guard rollback did not restore the pre-migration socket configuration'
-  grep -Fxq 'daemon-reload' "$RM_SYSTEMCTL_LOG" ||
-    fail 'boot guard rollback did not daemon-reload restored systemd configuration'
-  if grep -Eq '(^| )restart (socket|ssh\.socket)($| )' "$RM_SYSTEMCTL_LOG"; then
-    fail 'boot guard synchronously restarted SSH and can deadlock boot ordering'
-  fi
-  if grep -Eq '(^| )(enable|disable|start|stop) ssh\.socket($| )' "$RM_SYSTEMCTL_LOG"; then
-    fail 'boot guard transaction rollback restored ssh.socket service state inside the guard'
-  fi
-  assert_json "$(ssh_runtime_ports_json root)" '.effective==[22] and .actual==[22]'
-
-  # Ordinary/manual rollback keeps the existing behavior and explicitly
-  # restarts the currently selected SSH mode after restoring files.
-  : >"$RM_SYSTEMCTL_LOG"
-  migration2=$(ssh_begin_port_migration 2222)
-  ssh_rollback_pending
-  grep -Fq 'restart socket' "$RM_SYSTEMCTL_LOG" ||
-    fail 'ordinary socket rollback stopped restarting the active SSH mode'
-  assert_json "$(ssh_runtime_ports_json root)" '.effective==[22] and .actual==[22]'
 )
 
 case_socket_mode_and_boot_guard
