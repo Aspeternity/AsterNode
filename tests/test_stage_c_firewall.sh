@@ -303,10 +303,14 @@ for maint_state in missing disabled inactive; do
 done
 
 export RM_UFW_TEST_MAINT_TIMER_STATE=ready
+export RM_UFW_TEST_DENY_MARKER_STATE=present
+export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+export RM_UFW_TEST_TEMP_SWAP_RESULT=applied
 : >"$RM_UFW_LOG"
 : >"$RM_SYSTEMCTL_LOG"
 unset RM_UFW_TEST_MARKER_STATE
-opened=$(fw_temp_open node-fw 10)
+opened=''
+rm_capture_output opened fw_temp_open node-fw 10
 assert_json "$opened" '.status=="temporary_open_applied_unverified" and .node_id=="node-fw"'
 status=$(fw_status_json)
 assert_json "$status" '
@@ -316,8 +320,13 @@ assert_json "$status" '
     .verification_recorded==true and .temporary_public_open==true and
     .reason=="temporary-public-open")
 '
-grep -Fq 'prepend allow to any port 443' "$RM_UFW_LOG" ||
-  fail 'temporary public allow was not inserted ahead of managed deny'
+grep -Fq 'allow to any port 443' "$RM_UFW_LOG" ||
+  fail 'temporary public allow did not replace the managed deny'
+if grep -Fq 'prepend allow to any port 443' "$RM_UFW_LOG"; then
+  fail 'temporary public allow still used the UFW prepend path'
+fi
+[[ ${RM_UFW_TEST_TEMP_MARKER_STATE} == present && ${RM_UFW_TEST_DENY_MARKER_STATE} == absent ]] ||
+  fail 'temporary public allow was not proven live after DENY replacement'
 assert_json "$(cat "$RM_STATE_FILE")" '
   any(.temporary_opens[]; .node_id=="node-fw" and .phase=="APPLIED") and
   any(.owned_files[]; .path=="/etc/systemd/system/relay-manager-temp-node-fw.service") and
@@ -346,8 +355,10 @@ fw_expire_temp node-fw
 assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="node-fw")]|length)==0'
 status=$(fw_status_json)
 assert_json "$status" '.isolation_verified==true'
-grep -Fq -- '--force delete allow to any port 443' "$RM_UFW_LOG" ||
-  fail 'temporary public allow was not removed at expiry'
+grep -Fq 'deny to any port 443' "$RM_UFW_LOG" ||
+  fail 'temporary public allow did not restore the managed deny at expiry'
+[[ ${RM_UFW_TEST_TEMP_MARKER_STATE} == absent && ${RM_UFW_TEST_DENY_MARKER_STATE} == present ]] ||
+  fail 'managed deny was not proven restored at expiry'
 grep -Fq 'disable relay-manager-temp-node-fw.timer' "$RM_SYSTEMCTL_LOG" ||
   fail 'temporary access timer was not disabled at expiry'
 [[ -f "$root/etc/systemd/system/relay-manager-temp-node-fw.timer" ]] ||
@@ -360,21 +371,23 @@ state_update_filter '.temporary_opens += [{
 }]' --argjson rule "$armed_rule"
 : >"$RM_UFW_LOG"
 : >"$RM_SYSTEMCTL_LOG"
-export RM_UFW_TEST_MARKER_STATE=present
+export RM_UFW_TEST_TEMP_MARKER_STATE=present
+export RM_UFW_TEST_DENY_MARKER_STATE=present
 fw_expire_temp armed
 if grep -Fq -- '--force delete' "$RM_UFW_LOG"; then
   fail 'ARMED temporary access attempted to delete a rule that was never started'
 fi
 assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="armed")]|length)==0'
 
-# APPLYING is uncertain: marker absent is already clean; marker present must be
-# deleted; inability to inspect the marker must preserve the recovery intent.
+# APPLYING is uncertain: if the temporary marker is live, recovery must
+# restore the deterministic managed DENY; unknown marker state preserves intent.
 applying_absent_rule=$(fw_rule_args_json allow any 61238 'relay-manager:applying-absent:temporary:1')
 state_update_filter '.temporary_opens += [{
   node_id:"applying-absent",deadline_epoch:1,rule_args:$rule,unit:"relay-manager-temp-applying-absent",phase:"APPLYING"
 }]' --argjson rule "$applying_absent_rule"
 : >"$RM_UFW_LOG"
-export RM_UFW_TEST_MARKER_STATE=absent
+export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+export RM_UFW_TEST_DENY_MARKER_STATE=present
 fw_expire_temp applying-absent
 if grep -Fq -- '--force delete' "$RM_UFW_LOG"; then
   fail 'APPLYING/absent temporary access issued an unnecessary delete'
@@ -386,10 +399,11 @@ state_update_filter '.temporary_opens += [{
   node_id:"applying-present",deadline_epoch:1,rule_args:$rule,unit:"relay-manager-temp-applying-present",phase:"APPLYING"
 }]' --argjson rule "$applying_present_rule"
 : >"$RM_UFW_LOG"
-export RM_UFW_TEST_MARKER_STATE=present
+export RM_UFW_TEST_TEMP_MARKER_STATE=present
+export RM_UFW_TEST_DENY_MARKER_STATE=absent
 fw_expire_temp applying-present
-grep -Fq -- '--force delete allow to any port 61239 proto tcp comment relay-manager:applying-present:temporary:1' "$RM_UFW_LOG" ||
-  fail 'APPLYING/present temporary access did not remove the possibly-live rule'
+grep -Fq 'deny to any port 61239 proto tcp comment relay-manager:applying-present:deny' "$RM_UFW_LOG" ||
+  fail 'APPLYING/present temporary access did not restore the managed deny'
 assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="applying-present")]|length)==0'
 
 unknown_rule=$(fw_rule_args_json allow any 61240 'relay-manager:unknown:temporary:1')
@@ -397,7 +411,8 @@ state_update_filter '.temporary_opens += [{
   node_id:"unknown",deadline_epoch:1,rule_args:$rule,unit:"relay-manager-temp-unknown",phase:"APPLYING"
 }]' --argjson rule "$unknown_rule"
 : >"$RM_SYSTEMCTL_LOG"
-export RM_UFW_TEST_MARKER_STATE=unknown
+export RM_UFW_TEST_TEMP_MARKER_STATE=unknown
+export RM_UFW_TEST_DENY_MARKER_STATE=present
 set +e
 fw_expire_temp unknown
 rc=$?
@@ -407,23 +422,44 @@ assert_json "$(cat "$RM_STATE_FILE")" 'any(.temporary_opens[]; .node_id=="unknow
 if grep -Fq 'disable relay-manager-temp-unknown.timer' "$RM_SYSTEMCTL_LOG"; then
   fail 'unknown UFW marker state disabled the recovery timer'
 fi
-export RM_UFW_TEST_MARKER_STATE=absent
+export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+export RM_UFW_TEST_DENY_MARKER_STATE=present
 fw_expire_temp unknown
+
+# Regression: real UFW can return rc=0 while printing
+# "Skipping inserting existing rule". A successful process exit without the
+# temporary marker must never become APPLIED.
+export RM_UFW_TEST_TEMP_SWAP_RESULT=skipped
+export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+export RM_UFW_TEST_DENY_MARKER_STATE=present
+: >"$RM_UFW_LOG"
+set +e
+fw_temp_open node-fw 10 >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 20 "$rc" 'rc=0 UFW skip was incorrectly accepted as a live temporary allow'
+assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="node-fw")]|length)==0'
+[[ ${RM_UFW_TEST_TEMP_MARKER_STATE} == absent && ${RM_UFW_TEST_DENY_MARKER_STATE} == present ]] ||
+  fail 'rc=0 UFW skip did not leave the managed deny fail-closed'
+export RM_UFW_TEST_TEMP_SWAP_RESULT=applied
 
 # If UFW add itself fails and cleanup cannot be proven, keep APPLYING + timer
 # rather than claiming rollback success.
 : >"$RM_UFW_LOG"
 export RM_UFW_TEST_FAIL=1
-export RM_UFW_TEST_MARKER_STATE=present
+export RM_UFW_TEST_FAIL_AFTER_SWAP=1
+export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+export RM_UFW_TEST_DENY_MARKER_STATE=present
 set +e
 fw_temp_open node-fw 10 >/dev/null 2>&1
 rc=$?
 set -e
-unset RM_UFW_TEST_FAIL
-assert_eq 21 "$rc" 'uncertain temporary UFW add failure did not require recovery'
+unset RM_UFW_TEST_FAIL RM_UFW_TEST_FAIL_AFTER_SWAP
+assert_eq 21 "$rc" 'uncertain temporary UFW replacement failure did not require recovery'
 assert_json "$(cat "$RM_STATE_FILE")" 'any(.temporary_opens[]; .node_id=="node-fw" and .phase=="APPLYING")'
-export RM_UFW_TEST_MARKER_STATE=absent
+export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+export RM_UFW_TEST_DENY_MARKER_STATE=present
 fw_expire_temp node-fw
-unset RM_UFW_TEST_MARKER_STATE
+unset RM_UFW_TEST_MARKER_STATE RM_UFW_TEST_TEMP_MARKER_STATE RM_UFW_TEST_DENY_MARKER_STATE RM_UFW_TEST_TEMP_SWAP_RESULT
 
 pass 'Stage C UFW UCF integrity, safe enable, whitelist ownership, conflict refusal and crash-safe timed public access'

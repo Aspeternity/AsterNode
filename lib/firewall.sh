@@ -300,10 +300,32 @@ fw_exec_rule_json() {
   esac
 }
 
+# Return 0 when MARKER is present, 1 when it is definitely absent, and
+# RM_RC_RECOVERY_INCOMPLETE when live UFW state cannot be inspected safely.
+fw_rule_marker_state() {
+  local marker=$1 text state
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    case "$marker" in
+      *:temporary:*) state=${RM_UFW_TEST_TEMP_MARKER_STATE:-${RM_UFW_TEST_MARKER_STATE:-present}} ;;
+      *:deny) state=${RM_UFW_TEST_DENY_MARKER_STATE:-${RM_UFW_TEST_MARKER_STATE:-present}} ;;
+      *) state=${RM_UFW_TEST_MARKER_STATE:-present} ;;
+    esac
+    case "$state" in
+      present) return 0 ;;
+      absent) return 1 ;;
+      unknown) return "$RM_RC_RECOVERY_INCOMPLETE" ;;
+      *) return "$RM_RC_INTERNAL" ;;
+    esac
+  fi
+  if ! text=$(fw_ufw_status_text); then
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  fi
+  grep -Fq "# $marker" <<<"$text" && return 0
+  return 1
+}
+
 fw_marker_present() {
-  local marker=$1
-  [[ ${RM_TEST_MODE} == 1 ]] && return 0
-  fw_ufw_status_text | grep -Fq "# $marker"
+  fw_rule_marker_state "$1"
 }
 
 fw_port_external_allow_conflict() {
@@ -699,38 +721,146 @@ fw_temp_lock_release() {
   fi
 }
 
-# Return 0 when the managed marker is present, 1 when it is definitely absent,
-# and 21 when UFW status cannot be inspected safely.
 fw_temp_marker_state() {
-  local marker=$1 text
-  if [[ ${RM_TEST_MODE} == 1 ]]; then
-    case "${RM_UFW_TEST_MARKER_STATE:-present}" in
-      present) return 0 ;;
-      absent) return 1 ;;
-      unknown) return "$RM_RC_RECOVERY_INCOMPLETE" ;;
-      *) return "$RM_RC_INTERNAL" ;;
-    esac
-  fi
-  if ! text=$(fw_ufw_status_text); then
-    return "$RM_RC_RECOVERY_INCOMPLETE"
-  fi
-  grep -Fq "# $marker" <<<"$text" && return 0
-  return 1
+  fw_rule_marker_state "$1"
 }
 
-fw_temp_cleanup_rule_if_present() {
-  local rule=$1 marker rc
-  marker=$(jq -er '.[-1] | select(type=="string" and startswith("relay-manager:"))' <<<"$rule") ||
-    return "$RM_RC_RECOVERY_INCOMPLETE"
+fw_temp_rule_port() {
+  local rule=$1 port
+  port=$(jq -er '
+    (index("port")) as $i |
+    select($i != null and ($i + 1) < length) |
+    .[$i + 1] |
+    if type=="number" then . else tonumber end
+  ' <<<"$rule") || return "$RM_RC_RECOVERY_INCOMPLETE"
+  rm_valid_port "$port" || return "$RM_RC_RECOVERY_INCOMPLETE"
+  printf '%s\n' "$port"
+}
 
-  if fw_temp_marker_state "$marker"; then
-    fw_exec_rule_json "$rule" delete || return "$RM_RC_RECOVERY_INCOMPLETE"
+fw_temp_deny_rule_json() {
+  local nid=$1 port=$2
+  fw_rule_args_json deny any "$port" "relay-manager:$nid:deny"
+}
+
+fw_temp_require_managed_deny_baseline() {
+  local nid=$1 port=$2 deny_rule deny_comment rc
+  deny_comment="relay-manager:$nid:deny"
+  deny_rule=$(fw_temp_deny_rule_json "$nid" "$port") || return $?
+  state_init >/dev/null || return $?
+
+  jq -e --arg nid "$nid" --arg c "$deny_comment" --argjson p "$port" --argjson a "$deny_rule" '
+    ([.owned_firewall_rules[]? |
+      select((.node_id//"")==$nid and .kind=="deny" and .comment==$c and .port==$p and .args==$a)]
+      | length) == 1
+  ' "$RM_STATE_FILE" >/dev/null || {
+    rm_error "临时公网开放要求节点先具有受管 DENY 基线: $nid:$port"
+    return "$RM_RC_PRECONDITION"
+  }
+
+  if fw_rule_marker_state "$deny_comment"; then
     return 0
   else
     rc=$?
   fi
-  [[ $rc == 1 ]] && return 0
+  if [[ $rc == 1 ]]; then
+    rm_error "受管 DENY 基线未在 live UFW 中读回，拒绝临时开放: $deny_comment"
+    return "$RM_RC_PRECONDITION"
+  fi
   return "$rc"
+}
+
+# Test-only state model for the UFW same-match action replacement. Production
+# state is always determined by a live UFW read-back.
+fw_temp_test_swap_state() {
+  local target=$1
+  [[ ${RM_TEST_MODE} == 1 ]] || return 0
+  case "${RM_UFW_TEST_TEMP_SWAP_RESULT:-applied}" in
+    applied)
+      case "$target" in
+        temporary)
+          export RM_UFW_TEST_TEMP_MARKER_STATE=present
+          export RM_UFW_TEST_DENY_MARKER_STATE=absent
+          ;;
+        deny)
+          export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+          export RM_UFW_TEST_DENY_MARKER_STATE=present
+          ;;
+        delete-temporary)
+          export RM_UFW_TEST_TEMP_MARKER_STATE=absent
+          ;;
+        *) return "$RM_RC_INTERNAL" ;;
+      esac
+      ;;
+    skipped) ;;
+    *) return "$RM_RC_INTERNAL" ;;
+  esac
+}
+
+# UFW treats ALLOW and DENY with identical match fields as the same rule. A
+# prepend ALLOW may therefore return success while printing "Skipping inserting
+# existing rule". Replace the managed DENY in-place instead, then prove the
+# temporary marker is live before reporting success.
+fw_temp_swap_to_public() {
+  local nid=$1 temp_rule=$2 port deny_comment temp_comment trc drc
+  port=$(fw_temp_rule_port "$temp_rule") || return $?
+  deny_comment="relay-manager:$nid:deny"
+  temp_comment=$(jq -er '.[-1] | select(type=="string" and startswith("relay-manager:"))' <<<"$temp_rule") ||
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+
+  fw_exec_rule_json "$temp_rule" add append || {
+    if [[ ${RM_TEST_MODE} == 1 && ${RM_UFW_TEST_FAIL_AFTER_SWAP:-0} == 1 ]]; then
+      fw_temp_test_swap_state temporary || true
+    fi
+    return "$RM_RC_APPLY_ROLLED_BACK"
+  }
+  fw_temp_test_swap_state temporary || return $?
+
+  if fw_rule_marker_state "$temp_comment"; then trc=0; else trc=$?; fi
+  if fw_rule_marker_state "$deny_comment"; then drc=0; else drc=$?; fi
+  if [[ $trc == 0 && $drc == 1 ]]; then
+    return 0
+  fi
+  if [[ $trc == "$RM_RC_RECOVERY_INCOMPLETE" || $drc == "$RM_RC_RECOVERY_INCOMPLETE" ]]; then
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  fi
+  rm_error "UFW 临时开放写入后读回不一致；拒绝标记 APPLIED。"
+  return "$RM_RC_APPLY_ROLLED_BACK"
+}
+
+# Restore the deterministic managed DENY for the node. Recovery is complete
+# only after DENY is present and the temporary marker is absent.
+fw_temp_restore_managed_deny() {
+  local nid=$1 temp_rule=$2 port deny_rule deny_comment temp_comment trc drc
+  port=$(fw_temp_rule_port "$temp_rule") || return $?
+  deny_comment="relay-manager:$nid:deny"
+  deny_rule=$(fw_temp_deny_rule_json "$nid" "$port") || return $?
+  temp_comment=$(jq -er '.[-1] | select(type=="string" and startswith("relay-manager:"))' <<<"$temp_rule") ||
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+
+  if fw_rule_marker_state "$temp_comment"; then trc=0; else trc=$?; fi
+  if fw_rule_marker_state "$deny_comment"; then drc=0; else drc=$?; fi
+  if [[ $trc == "$RM_RC_RECOVERY_INCOMPLETE" || $drc == "$RM_RC_RECOVERY_INCOMPLETE" ]]; then
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  fi
+
+  if [[ $trc == 1 && $drc == 0 ]]; then
+    return 0
+  elif [[ $trc == 0 && $drc == 0 ]]; then
+    fw_exec_rule_json "$temp_rule" delete || return "$RM_RC_RECOVERY_INCOMPLETE"
+    fw_temp_test_swap_state delete-temporary || return $?
+  else
+    # temp present + deny absent: normal restore by same-match action
+    # replacement. Both absent: reconstruct the deterministic managed DENY.
+    fw_exec_rule_json "$deny_rule" add append || return "$RM_RC_RECOVERY_INCOMPLETE"
+    fw_temp_test_swap_state deny || return $?
+  fi
+
+  if fw_rule_marker_state "$temp_comment"; then trc=0; else trc=$?; fi
+  if fw_rule_marker_state "$deny_comment"; then drc=0; else drc=$?; fi
+  [[ $trc == 1 && $drc == 0 ]] || {
+    rm_error "UFW 临时开放恢复后未能证明受管 DENY 已恢复。"
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  }
 }
 
 fw_temp_disable_timer() {
@@ -767,6 +897,7 @@ _fw_temp_open_locked() {
 
   node=$(state_get_node "$nid") || return "$RM_RC_PRECONDITION"
   port=$(jq -r .listen_port <<<"$node")
+  fw_temp_require_managed_deny_baseline "$nid" "$port" || return $?
   now=$(rm_epoch)
   deadline=$((now+minutes*60))
   unit=$(fw_temp_unit_names "$nid")
@@ -907,11 +1038,12 @@ EOS
     return "$RM_RC_RECOVERY_INCOMPLETE"
   fi
 
-  # Public allow must precede the managed node deny, otherwise UFW first-match
-  # semantics would keep it blocked.
-  if ! fw_exec_rule_json "$rule" add prepend; then
+  # UFW de-duplicates rules by match fields, so a prepended ALLOW cannot
+  # reliably coexist with the managed DENY for the same port. Replace the
+  # managed DENY in-place and require a live marker read-back before APPLIED.
+  if ! fw_temp_swap_to_public "$nid" "$rule"; then
     cleanup_rc=0
-    fw_temp_cleanup_rule_if_present "$rule" || cleanup_rc=$?
+    fw_temp_restore_managed_deny "$nid" "$rule" || cleanup_rc=$?
     if ((cleanup_rc==0)); then
       fw_temp_disable_timer "$unit" || cleanup_rc=$?
     fi
@@ -920,7 +1052,7 @@ EOS
     fi
     rm -rf "$tmpdir"
     ((cleanup_rc==0)) && return "$RM_RC_APPLY_ROLLED_BACK"
-    rm_error 'UFW 临时放行失败且无法证明已完整清理；保留 intent/timer 等待恢复。'
+    rm_error 'UFW 临时放行失败且无法证明受管 DENY 已恢复；保留 intent/timer 等待恢复。'
     return "$RM_RC_RECOVERY_INCOMPLETE"
   fi
 
@@ -931,7 +1063,7 @@ EOS
   fi
 
   rm -rf "$tmpdir"
-  jq -n --arg nid "$nid" --argjson deadline "$deadline"     '{status:"temporary_open_applied_unverified",node_id:$nid,deadline_epoch:$deadline,note:"到期只删除本次临时放行；已有连接可能继续，不执行全局 conntrack 清理。"}'
+  jq -n --arg nid "$nid" --argjson deadline "$deadline"     '{status:"temporary_open_applied_unverified",node_id:$nid,deadline_epoch:$deadline,note:"到期恢复节点受管 DENY；已有连接可能继续，不执行全局 conntrack 清理。"}'
 }
 
 fw_expire_temp() {
@@ -957,7 +1089,7 @@ _fw_expire_temp_locked() {
     ARMED)
       ;;
     APPLYING|APPLIED)
-      fw_temp_cleanup_rule_if_present "$rule" || return $?
+      fw_temp_restore_managed_deny "$nid" "$rule" || return $?
       ;;
     *)
       rm_error "临时开放记录 phase 非法: $phase"
