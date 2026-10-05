@@ -785,7 +785,7 @@ EOS
       )
       | .owned_services=((.owned_services + [$service_name,$timer_name]) | unique)
       | .temporary_opens=([.temporary_opens[]|select(.node_id!=$nid)] + [{
-          node_id:$nid,deadline_epoch:$deadline,rule_args:$rule,unit:$unit
+          node_id:$nid,deadline_epoch:$deadline,rule_args:$rule,unit:$unit,phase:"ARMED"
         }])' \
       --arg service_path "/etc/systemd/system/$unit.service" \
       --arg service_sha "$service_sha" \
@@ -806,6 +806,18 @@ EOS
     return "$RM_RC_RECOVERY_INCOMPLETE"
   fi
 
+  # Mark the uncertain write window before invoking UFW. If the manager dies
+  # during the add, expiry knows the rule may exist and must attempt deletion.
+  state_update_filter '(.temporary_opens[]|select(.node_id==$nid)).phase="APPLYING"' --arg nid "$nid" || {
+    if [[ ${RM_TEST_MODE} == 1 ]]; then
+      rm_systemctl disable "$unit.timer" >/dev/null 2>&1 || true
+    else
+      systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$tmpdir"
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  }
+
   # Public allow must precede the managed node deny, otherwise UFW first-match
   # semantics would keep it blocked.
   if ! fw_exec_rule_json "$rule" add prepend; then
@@ -818,6 +830,13 @@ EOS
     state_update_filter '.temporary_opens=[.temporary_opens[]|select(.node_id!=$nid)]' --arg nid "$nid" || true
     rm -rf "$tmpdir"
     return "$RM_RC_APPLY_ROLLED_BACK"
+  fi
+
+  if ! state_update_filter '(.temporary_opens[]|select(.node_id==$nid)).phase="APPLIED"' --arg nid "$nid"; then
+    # Keep the APPLYING intent, active timer and live rule. Recovery will treat
+    # APPLYING conservatively and delete the rule at expiry.
+    rm -rf "$tmpdir"
+    return "$RM_RC_RECOVERY_INCOMPLETE"
   fi
 
   rm -rf "$tmpdir"
@@ -833,7 +852,7 @@ fw_expire_temp() {
 }
 
 _fw_expire_temp_locked() {
-  local nid=$1 entry unit rule comment
+  local nid=$1 entry unit rule phase
   state_init >/dev/null
   unit=$(fw_temp_unit_names "$nid")
   entry=$(jq -c --arg id "$nid" '.temporary_opens[]|select(.node_id==$id)' "$RM_STATE_FILE" 2>/dev/null || true)
@@ -841,17 +860,22 @@ _fw_expire_temp_locked() {
   if [[ -n $entry ]]; then
     unit=$(jq -r .unit <<<"$entry")
     rule=$(jq -c .rule_args <<<"$entry")
-    comment=$(jq -r '.[-1] // empty' <<<"$rule")
-    [[ -n $comment ]] || {
-      rm_error '临时开放记录缺少受管 UFW comment，拒绝猜测删除。'
-      return "$RM_RC_RECOVERY_INCOMPLETE"
-    }
-    if fw_marker_present "$comment"; then
-      fw_exec_rule_json "$rule" delete || {
-        rm_error '临时开放规则删除失败'
+    phase=$(jq -r '.phase // "APPLIED"' <<<"$entry")
+    case "$phase" in
+      ARMED)
+        # The intent was persisted, but the live UFW add was never started.
+        ;;
+      APPLYING|APPLIED)
+        fw_exec_rule_json "$rule" delete || {
+          rm_error "临时开放规则处于 $phase 状态且删除失败，保留恢复现场。"
+          return "$RM_RC_RECOVERY_INCOMPLETE"
+        }
+        ;;
+      *)
+        rm_error "临时开放记录 phase 非法: $phase"
         return "$RM_RC_RECOVERY_INCOMPLETE"
-      }
-    fi
+        ;;
+    esac
   fi
 
   # If the manager died after committing the timer but before persisting the
