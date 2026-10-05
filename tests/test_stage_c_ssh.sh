@@ -218,6 +218,18 @@ assert_json "$migration" '
   .change=="port-migration" and
   (.transaction_id|length)>0
 '
+
+protection_file=''
+for f in "$RM_TX_DIR"/*/transaction.json; do
+  [[ -f $f ]] || continue
+  if jq -e '.type=="ssh-protection"' "$f" >/dev/null 2>&1; then protection_file=$f; fi
+done
+[[ -n $protection_file ]] || fail 'SSH protection transaction was not recorded'
+assert_json "$(cat "$protection_file")" '
+  .status=="COMMITTED" and
+  ([.services[]|select(.name=="relay-manager-ssh-boot-guard.service" and .managed_change==true)]|length)==1 and
+  ([.services[]|select(.name=="relay-manager-ssh-rollback.timer" and .managed_change==true)]|length)==1
+'
 grep -Fq 'start relay-manager-ssh-boot-guard.service' "$RM_SYSTEMCTL_LOG" ||
   fail 'SSH boot recovery guard was not started before migration'
 grep -Fq 'start relay-manager-ssh-rollback.timer' "$RM_SYSTEMCTL_LOG" ||
