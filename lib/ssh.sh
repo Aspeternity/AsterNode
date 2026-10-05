@@ -659,6 +659,8 @@ EOS
     service:sshd) guard_dest=$RM_SSHD_SERVICE_GUARD_DROPIN ;;
   esac
   rm_capture_output tx tx_begin ssh-protection || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  tx_record_service "$tx" relay-manager-ssh-boot-guard.service true || rc=$?
+  ((rc==0)) && tx_record_service "$tx" relay-manager-ssh-rollback.timer true || rc=$?
   tx_stage_file "$tx" "$svc" "$RM_SSH_PROTECT_SERVICE" 0644 root:root || rc=$?
   ((rc==0)) && tx_stage_file "$tx" "$timer" "$RM_SSH_PROTECT_TIMER" 0644 root:root || rc=$?
   ((rc==0)) && tx_stage_file "$tx" "$guard" "$RM_SSH_BOOT_GUARD_SERVICE" 0644 root:root || rc=$?
