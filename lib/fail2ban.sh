@@ -381,7 +381,7 @@ f2b_apply_ssh_jail() {
   tmpdir=$(rm_safe_tmpdir); cfg="$tmpdir/relay-manager-ssh.local"
   f2b_render_config "$cfg" "$@" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
 
-  tx=$(tx_begin fail2ban-ssh) || { rm -rf "$tmpdir"; return $?; }
+  rm_capture_output tx tx_begin fail2ban-ssh || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   tx_record_service "$tx" fail2ban true || true
   tx_stage_file "$tx" "$cfg" "$RM_F2B_DROPIN" 0644 root:root || {
     tx_rollback "$tx" 'f2b stage failed' || true; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION";
@@ -419,7 +419,7 @@ f2b_apply_ssh_jail() {
     rm -rf "$tmpdir"; return "$rc"
   fi
 
-  tx_commit "$tx" || { rm -rf "$tmpdir"; return $?; }
+  tx_commit "$tx" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   state_add_owned_file /etc/fail2ban/jail.d/relay-manager-ssh.local "$(rm_sha256_file "$RM_F2B_DROPIN")"
   local backend health; backend=$(f2b_backend_json); health=$(f2b_runtime_health_json)
   rm -rf "$tmpdir"
@@ -440,7 +440,7 @@ f2b_disable_managed() {
 [sshd]
 enabled = false
 EOF
-  tx=$(tx_begin fail2ban-disable) || { rm -rf "$tmpdir"; return $?; }
+  rm_capture_output tx tx_begin fail2ban-disable || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   tx_record_service "$tx" fail2ban true || true
   tx_stage_file "$tx" "$cfg" "$RM_F2B_DROPIN" 0644 root:root || {
     tx_rollback "$tx" 'f2b disable stage failed' || true; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION";
@@ -449,7 +449,7 @@ EOF
   f2b_client -t >/dev/null 2>&1 || { tx_rollback "$tx" 'disabled config invalid' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
   if [[ ${RM_TEST_MODE} == 1 ]]; then rm_systemctl restart fail2ban
   else systemctl restart fail2ban || { tx_rollback "$tx" 'fail2ban restart failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }; fi
-  tx_commit "$tx" || { rm -rf "$tmpdir"; return $?; }
+  tx_commit "$tx" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   state_add_owned_file /etc/fail2ban/jail.d/relay-manager-ssh.local "$(rm_sha256_file "$RM_F2B_DROPIN")"
   rm -rf "$tmpdir"
   jq -n '{status:"managed_sshd_jail_disabled",other_jails_untouched:true}'

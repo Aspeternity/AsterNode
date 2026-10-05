@@ -307,17 +307,17 @@ maintenance_prune_safe() {
   local tx_removed exports_removed evidence_removed manager_removed core_removed
   local backups_before=0 backups_after=0 backups_removed=0
 
-  tx_removed=$(maintenance_prune_transactions) || return $?
+  rm_capture_output tx_removed maintenance_prune_transactions || return $?
   if [[ -d $RM_BACKUP_DIR && ! -L $RM_BACKUP_DIR ]]; then
     backups_before=$(backup_list | jq 'length')
     backup_prune || return $?
     backups_after=$(backup_list | jq 'length')
     backups_removed=$((backups_before-backups_after))
   fi
-  exports_removed=$(maintenance_prune_exports) || return $?
-  evidence_removed=$(maintenance_prune_evidence) || return $?
-  manager_removed=$(maintenance_prune_manager_versions) || return $?
-  core_removed=$(maintenance_prune_core_versions) || return $?
+  rm_capture_output exports_removed maintenance_prune_exports || return $?
+  rm_capture_output evidence_removed maintenance_prune_evidence || return $?
+  rm_capture_output manager_removed maintenance_prune_manager_versions || return $?
+  rm_capture_output core_removed maintenance_prune_core_versions || return $?
 
   jq -n --argjson tx "$tx_removed" --argjson backups "$backups_removed" \
     --argjson exports "$exports_removed" --argjson evidence "$evidence_removed" \

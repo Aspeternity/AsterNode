@@ -204,7 +204,7 @@ xray_service_install() {
   if [[ ${RM_TEST_MODE} != 1 ]]; then chown root:rm-xray "$RM_XRAY_ETC_DIR"; fi
 
   local tx rc=0
-  tx=$(tx_begin core-service) || return $?
+  rm_capture_output tx tx_begin core-service || return $?
   tx_record_service "$tx" "$RM_XRAY_SERVICE" || true
   tx_record_service "$tx" "$RM_MAINT_SERVICE" || true
   tx_record_service "$tx" "$RM_MAINT_TIMER" || true

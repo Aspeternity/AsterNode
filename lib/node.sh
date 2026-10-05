@@ -318,7 +318,7 @@ node_apply_state_only_candidate() {
     [.owned_files[]? | select(.path==$path) | .sha256][0] // empty
   ' "$RM_STATE_FILE")
 
-  tx=$(tx_begin "$type") || return $?
+  rm_capture_output tx tx_begin "$type" || return $?
 
   if [[ -n $expected_config_sha ]]; then
     tx_snapshot_file "$tx" "$RM_XRAY_CONFIG" || {
@@ -402,7 +402,7 @@ node_apply_candidate_state() {
   ' "$candidate" >"$c2"
   mv "$c2" "$candidate"
 
-  tx=$(tx_begin "$type") || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  rm_capture_output tx tx_begin "$type" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   tx_record_service "$tx" "$RM_XRAY_SERVICE" || true
   tx_stage_file "$tx" "$candidate" "$RM_STATE_FILE" 0600 root:root || {
     tx_rollback "$tx" 'state stage failed' || true

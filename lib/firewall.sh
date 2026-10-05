@@ -662,7 +662,7 @@ Unit=$unit.service
 [Install]
 WantedBy=timers.target
 EOS
-  tx=$(tx_begin firewall-temp-open "$deadline") || { rm -rf "$tmpdir"; return $?; }
+  rm_capture_output tx tx_begin firewall-temp-open "$deadline" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   tx_stage_file "$tx" "$service" "$(rm_path /etc/systemd/system/$unit.service)" 0644 root:root || rc=$?
   ((rc==0)) && tx_stage_file "$tx" "$timer" "$(rm_path /etc/systemd/system/$unit.timer)" 0644 root:root || rc=$?
   if ((rc!=0)); then tx_rollback "$tx" 'timer stage failed' || true; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; fi

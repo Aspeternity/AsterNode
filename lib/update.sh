@@ -654,7 +654,7 @@ update_core_to() {
   service=$(update_xray_service_state_json)
   enabled=$(jq -r .enabled <<<"$service")
   active=$(jq -r .active <<<"$service")
-  backup=$(backup_create upgrade) || return $?
+  rm_capture_output backup backup_create upgrade || return $?
 
   xray_core_prepare "$version" || return $?
   if [[ -f $RM_XRAY_CONFIG ]]; then

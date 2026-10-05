@@ -104,6 +104,27 @@ rm_safe_tmpdir() {
   mktemp -d "$base/tmp.XXXXXXXX"
 }
 
+# Capture stdout while running the target command/function in the current shell.
+# Use this for mutating functions: command substitution would run them in a
+# subshell that can survive if the top-level manager process is SIGKILLed.
+rm_capture_output() {
+  local __rm_capture_name=${1:-}
+  shift || true
+  [[ $__rm_capture_name =~ ^[A-Za-z_][A-Za-z0-9_]*$ && $# -gt 0 ]] || return "$RM_RC_PRECONDITION"
+
+  local __rm_capture_tmp __rm_capture_rc=0 __rm_capture_value=''
+  __rm_capture_tmp=$(mktemp) || return "$RM_RC_INTERNAL"
+  if "$@" >"$__rm_capture_tmp"; then
+    __rm_capture_rc=0
+  else
+    __rm_capture_rc=$?
+  fi
+  __rm_capture_value=$(cat -- "$__rm_capture_tmp")
+  rm -f -- "$__rm_capture_tmp"
+  printf -v "$__rm_capture_name" '%s' "$__rm_capture_value"
+  return "$__rm_capture_rc"
+}
+
 rm_json_valid() { jq -e . "$1" >/dev/null 2>&1; }
 
 rm_atomic_write() {

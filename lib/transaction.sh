@@ -7,7 +7,8 @@ RM_TX_DIR="$RM_VAR_DIR/transactions"
 RM_TX_SNAPSHOT_DIR="$RM_VAR_DIR/snapshots"
 
 _tx_rand() {
-  printf '%s' "$(date -u +%Y%m%dT%H%M%SZ)-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+  local pid=${1:-$BASHPID}
+  printf '%s' "$(date -u +%Y%m%dT%H%M%SZ)-$pid-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 }
 
 _tx_boot_id() {
@@ -82,15 +83,16 @@ tx_begin() {
     return "$RM_RC_PRECONDITION"
   fi
 
-  local id dir f now boot
-  id=$(_tx_rand); dir=$(tx_dir "$id"); f=$(tx_file "$id"); now=$(rm_now); boot=$(_tx_boot_id)
+  local id dir f now boot creator_pid
+  creator_pid=$BASHPID
+  id=$(_tx_rand "$creator_pid"); dir=$(tx_dir "$id"); f=$(tx_file "$id"); now=$(rm_now); boot=$(_tx_boot_id)
   install -d -m 0700 -- "$dir" "$dir/snapshots" "$dir/staged"
   if [[ $deadline == null || -z $deadline ]]; then
-    jq -n --arg id "$id" --arg type "$type" --arg now "$now" --arg manager "$RM_MANAGER_VERSION" --arg boot "$boot" --argjson pid "$$" \
+    jq -n --arg id "$id" --arg type "$type" --arg now "$now" --arg manager "$RM_MANAGER_VERSION" --arg boot "$boot" --argjson pid "$creator_pid" \
       '{transaction_id:$id,type:$type,status:"PREPARED",manager_version:$manager,created_at:$now,updated_at:$now,
         creator_pid:$pid,boot_id:$boot,deadline_epoch:null,files:[],services:[],failure_reason:null,recovery_notes:[]}' >"$f"
   else
-    jq -n --arg id "$id" --arg type "$type" --arg now "$now" --arg manager "$RM_MANAGER_VERSION" --arg boot "$boot" --argjson pid "$$" --argjson deadline "$deadline" \
+    jq -n --arg id "$id" --arg type "$type" --arg now "$now" --arg manager "$RM_MANAGER_VERSION" --arg boot "$boot" --argjson pid "$creator_pid" --argjson deadline "$deadline" \
       '{transaction_id:$id,type:$type,status:"PREPARED",manager_version:$manager,created_at:$now,updated_at:$now,
         creator_pid:$pid,boot_id:$boot,deadline_epoch:$deadline,files:[],services:[],failure_reason:null,recovery_notes:[]}' >"$f"
   fi

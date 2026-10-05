@@ -55,7 +55,7 @@ quick_deploy() {
   rm_read_tty source '线路机实际出口 IP/CIDR（白名单模式必填）: '
   jq -n --slurpfile n "$nodepart" --arg upname "$upname" --arg source "$source" '{node:$n[0],upstreams:[{name:$upname,source_addresses:(if $source=="" then [] else [$source] end)}]}' >"$spec"
   local created nid upid
-  created=$(node_create_or_replace_spec "$spec" create) || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  rm_capture_output created node_create_or_replace_spec "$spec" create || { local rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   nid=$(jq -r .node_id <<<"$created"); upid=$(jq -r '.upstream_ids[0]' <<<"$created")
   if [[ -n $source && $(jq -r '.node.access_mode' "$spec") == whitelist ]]; then
     local fws; fws=$(fw_status_json); if jq -e '.installed and .active and (.complex_environment|not)' <<<"$fws" >/dev/null; then
