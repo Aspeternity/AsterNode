@@ -581,7 +581,7 @@ Description=AsterNode SSH rollback protection
 After=local-fs.target
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/relay-manager ssh rollback-pending --boot-guard
+ExecStart=/usr/local/bin/relay-manager ssh rollback-pending
 EOS
   cat >"$guard" <<'EOS'
 [Unit]
@@ -592,7 +592,7 @@ Before=ssh.service sshd.service ssh.socket
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/relay-manager ssh rollback-pending
+ExecStart=/usr/local/bin/relay-manager ssh rollback-pending --boot-guard
 EOS
   cat >"$timer" <<EOS
 [Unit]
