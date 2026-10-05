@@ -739,25 +739,110 @@ ssh_recovery_guide_json() {
 }
 
 ssh_apply_policy_protected() {
-  local policy=$1 change=$2 target_user=${3:-root} deadline=${4:-$(( $(rm_epoch)+300 ))} mode tmpdir drop socket tx rc service_unit expected_ports expected_families
+  local policy=$1 change=$2 target_user=${3:-root} deadline=${4:-$(( $(rm_epoch)+300 ))}
+  local firewall_add_port=${5:-} firewall_remove_after_confirm=${6:-'[]'}
+  local mode tmpdir drop socket tx rc service_unit expected_ports expected_families
+  local fw_result='{"status":"not_requested","added":false}'
+
   rm_require_root || return $?
-  if [[ ${RM_TEST_MODE} != 1 ]]; then rm_tty_available || { rm_error 'SSH 安全修改要求交互 TTY。'; return "$RM_RC_PRECONDITION"; }; fi
+  [[ -z $firewall_add_port ]] || rm_valid_port "$firewall_add_port" || return "$RM_RC_PRECONDITION"
+  jq -e 'type=="array" and all(.[]; type=="number" and .>=1 and .<=65535)' <<<"$firewall_remove_after_confirm" >/dev/null ||
+    return "$RM_RC_PRECONDITION"
+  if [[ ${RM_TEST_MODE} != 1 ]]; then
+    rm_tty_available || { rm_error 'SSH 安全修改要求交互 TTY。'; return "$RM_RC_PRECONDITION"; }
+  fi
   ssh_main_config_test || { rm_error '现有 sshd 配置本身未通过语法检查，拒绝开始迁移。'; return "$RM_RC_PRECONDITION"; }
-  mode=$(ssh_service_mode); [[ $mode != unknown ]] || return "$RM_RC_PRECONDITION"
+  mode=$(ssh_service_mode)
+  [[ $mode != unknown ]] || return "$RM_RC_PRECONDITION"
+
   ssh_protection_setup "$deadline" "$mode" || return $?
-  tmpdir=$(rm_safe_tmpdir); drop="$tmpdir/ssh.conf"; socket="$tmpdir/socket.conf"
-  ssh_policy_render_dropin "$policy" "$drop"; ssh_socket_render_override "$policy" "$socket"
-  rm_capture_output tx tx_begin "ssh-change:$change" "$deadline" || { rc=$?; ssh_protection_disable; rm -rf "$tmpdir"; return "$rc"; }
-  tx_update "$tx" '.ssh={change:$change,ports:$ports,listen_families:$families,target_user:$user}' \
-    --arg change "$change" --argjson ports "$(jq '.ports' "$policy")" \
-    --argjson families "$(jq '.listen_families' "$policy")" --arg user "$target_user"
-  case "$mode" in socket) service_unit=ssh.socket;; service:ssh) service_unit=ssh.service;; service:sshd) service_unit=sshd.service;; esac
+  tmpdir=$(rm_safe_tmpdir)
+  drop="$tmpdir/ssh.conf"
+  socket="$tmpdir/socket.conf"
+  ssh_policy_render_dropin "$policy" "$drop"
+  ssh_socket_render_override "$policy" "$socket"
+
+  rm_capture_output tx tx_begin "ssh-change:$change" "$deadline" || {
+    rc=$?
+    ssh_protection_disable
+    rm -rf "$tmpdir"
+    return "$rc"
+  }
+
+  tx_update "$tx" '.ssh={change:$change,ports:$ports,listen_families:$families,target_user:$user,firewall_remove_after_confirm:$remove_ports}' \
+    --arg change "$change" \
+    --argjson ports "$(jq '.ports' "$policy")" \
+    --argjson families "$(jq '.listen_families' "$policy")" \
+    --arg user "$target_user" \
+    --argjson remove_ports "$firewall_remove_after_confirm" || {
+      rc=$?
+      tx_rollback "$tx" 'SSH transaction metadata update failed' || true
+      ssh_protection_disable
+      rm -rf "$tmpdir"
+      return "$rc"
+    }
+
+  case "$mode" in
+    socket) service_unit=ssh.socket ;;
+    service:ssh) service_unit=ssh.service ;;
+    service:sshd) service_unit=sshd.service ;;
+  esac
   tx_record_service "$tx" "$service_unit" true || true
-  tx_stage_file "$tx" "$policy" "$RM_SSH_POLICY" 0600 root:root || { tx_rollback "$tx" 'policy stage failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
-  tx_stage_file "$tx" "$drop" "$RM_SSH_DROPIN" 0644 root:root || { tx_rollback "$tx" 'dropin stage failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
-  if [[ $mode == socket ]]; then tx_stage_file "$tx" "$socket" "$RM_SSH_SOCKET_DROPIN" 0644 root:root || { tx_rollback "$tx" 'socket override stage failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }; fi
-  tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'SSH apply failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$rc"; }
-  if ! ssh_main_config_test || ! ssh_restart_mode "$mode"; then rc=$RM_RC_APPLY_ROLLED_BACK; tx_rollback "$tx" 'SSHD syntax/restart failed' || rc=$?; ssh_restart_mode "$mode" || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$rc"; fi
+
+  tx_stage_file "$tx" "$policy" "$RM_SSH_POLICY" 0600 root:root || {
+    tx_rollback "$tx" 'policy stage failed' || true
+    ssh_protection_disable
+    rm -rf "$tmpdir"
+    return "$RM_RC_PRECONDITION"
+  }
+  tx_stage_file "$tx" "$drop" "$RM_SSH_DROPIN" 0644 root:root || {
+    tx_rollback "$tx" 'dropin stage failed' || true
+    ssh_protection_disable
+    rm -rf "$tmpdir"
+    return "$RM_RC_PRECONDITION"
+  }
+  if [[ $mode == socket ]]; then
+    tx_stage_file "$tx" "$socket" "$RM_SSH_SOCKET_DROPIN" 0644 root:root || {
+      tx_rollback "$tx" 'socket override stage failed' || true
+      ssh_protection_disable
+      rm -rf "$tmpdir"
+      return "$RM_RC_PRECONDITION"
+    }
+  fi
+
+  # For port migration, record rollback intent in the SSH transaction before
+  # the live UFW add. This closes the SIGKILL window between firewall mutation
+  # and transaction metadata persistence.
+  if [[ -n $firewall_add_port ]]; then
+    rm_capture_output fw_result fw_ensure_ssh_port "$firewall_add_port" "$tx" || {
+      rc=$?
+      tx_rollback "$tx" 'SSH firewall pre-open failed' || true
+      ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
+      ssh_protection_disable
+      rm -rf "$tmpdir"
+      return "$rc"
+    }
+  fi
+
+  tx_apply "$tx" || {
+    rc=$?
+    tx_rollback "$tx" 'SSH apply failed' || true
+    ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
+    ssh_protection_disable
+    rm -rf "$tmpdir"
+    return "$rc"
+  }
+
+  if ! ssh_main_config_test || ! ssh_restart_mode "$mode"; then
+    rc=$RM_RC_APPLY_ROLLED_BACK
+    tx_rollback "$tx" 'SSHD syntax/restart failed' || rc=$?
+    ssh_restart_mode "$mode" || true
+    ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
+    ssh_protection_disable
+    rm -rf "$tmpdir"
+    return "$rc"
+  fi
+
   if [[ $change == port-migration || $change == remove-old-port ]]; then
     expected_ports=$(jq -c '.ports|map(tonumber)|unique|sort' "$policy")
     expected_families=$(jq -c '.listen_families|map(select(.=="ipv4" or .=="ipv6"))|unique|sort' "$policy")
@@ -765,62 +850,91 @@ ssh_apply_policy_protected() {
       rc=$RM_RC_APPLY_ROLLED_BACK
       tx_rollback "$tx" 'SSH 监听端口或地址族未收敛到目标策略' || rc=$?
       ssh_restart_mode "$mode" || true
+      ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
       ssh_protection_disable
       rm -rf "$tmpdir"
       return "$rc"
     fi
   fi
+
   rm -rf "$tmpdir"
-  jq -n --arg tx "$tx" --arg change "$change" --argjson deadline "$deadline" '{status:"pending_manual_verification",transaction_id:$tx,change:$change,deadline_epoch:$deadline,recovery_command:"relay-manager ssh recovery-guide",note:"请保持当前会话，另开一个全新 SSH 连接验证后再执行 ssh confirm；本机回滚不能修复云安全组或 NAT 阻断。"}'
+  if [[ -n $firewall_add_port ]]; then
+    jq -n --arg tx "$tx" --arg change "$change" --argjson deadline "$deadline" --argjson firewall "$fw_result" \
+      '{status:"pending_manual_verification",transaction_id:$tx,change:$change,deadline_epoch:$deadline,recovery_command:"relay-manager ssh recovery-guide",note:"请保持当前会话，另开一个全新 SSH 连接验证后再执行 ssh confirm；本机回滚不能修复云安全组或 NAT 阻断。",firewall:$firewall}'
+  else
+    jq -n --arg tx "$tx" --arg change "$change" --argjson deadline "$deadline" \
+      '{status:"pending_manual_verification",transaction_id:$tx,change:$change,deadline_epoch:$deadline,recovery_command:"relay-manager ssh recovery-guide",note:"请保持当前会话，另开一个全新 SSH 连接验证后再执行 ssh confirm；本机回滚不能修复云安全组或 NAT 阻断。"}'
+  fi
+}
+
+ssh_cleanup_firewall_added_from_tx() {
+  local tx=$1 f p rc=0
+  f=$(tx_file "$tx")
+  [[ -f $f ]] || return "$RM_RC_PRECONDITION"
+  while IFS= read -r p; do
+    [[ -n $p ]] || continue
+    fw_release_ssh_port "$p" || rc=$RM_RC_RECOVERY_INCOMPLETE
+  done < <(jq -r '.ssh.firewall_added_ports[]? // empty' "$f" 2>/dev/null || true)
+  return "$rc"
 }
 
 ssh_begin_port_migration() {
-  local newport=$1 tmp policy ports fw_result='{}' fw_added=false result txid rc port_blockers
+  local newport=$1 tmp policy ports result rc port_blockers
   rm_valid_port "$newport" || return "$RM_RC_PRECONDITION"
   port_blockers=$(ssh_port_automation_blockers_json)
-  [[ $(jq 'length' <<<"$port_blockers") == 0 ]] || { rm_error "检测到外部 ListenAddress，拒绝自动修改 SSH 端口: $(jq -c . <<<"$port_blockers")"; return "$RM_RC_PRECONDITION"; }
+  [[ $(jq 'length' <<<"$port_blockers") == 0 ]] || {
+    rm_error "检测到外部 ListenAddress，拒绝自动修改 SSH 端口: $(jq -c . <<<"$port_blockers")"
+    return "$RM_RC_PRECONDITION"
+  }
   if [[ ${RM_TEST_MODE} != 1 ]] && rm_have ss && ss -H -lnt "sport = :$newport" 2>/dev/null | grep -q .; then
     rm_error '新 SSH 端口已被占用'
     return "$RM_RC_PRECONDITION"
   fi
-  rm_capture_output fw_result fw_ensure_ssh_port "$newport" || return $?
-  fw_added=$(jq -r '.added // false' <<<"$fw_result")
 
-  tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
+  tmp=$(rm_safe_tmpdir)
+  policy="$tmp/policy.json"
+  ssh_policy_load_or_init "$policy"
   ports=$(jq --argjson p "$newport" '.ports + [$p] | unique' "$policy")
-  jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
+  jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"
+  mv "$tmp/p2" "$policy"
 
-  rm_capture_output result ssh_apply_policy_protected "$policy" port-migration root || {
+  rm_capture_output result ssh_apply_policy_protected "$policy" port-migration root "" "$newport" || {
     rc=$?
-    [[ $fw_added == true ]] && fw_release_ssh_port "$newport" || true
     rm -rf "$tmp"
     return "$rc"
   }
-  txid=$(jq -r .transaction_id <<<"$result")
-  if [[ $fw_added == true ]]; then
-    tx_update "$txid" '.ssh.firewall_added_ports=((.ssh.firewall_added_ports//[]) + [$p] | unique)' --argjson p "$newport"
-  fi
-  jq -n --argjson ssh "$result" --argjson firewall "$fw_result" '$ssh + {firewall:$firewall}'
+  printf '%s\n' "$result"
   rm -rf "$tmp"
 }
 
 ssh_begin_remove_old_port() {
-  local keep=$1 tmp policy current_ports remove_ports result txid port_blockers
+  local keep=$1 tmp policy current_ports remove_ports result port_blockers
   rm_valid_port "$keep" || return "$RM_RC_PRECONDITION"
   port_blockers=$(ssh_port_automation_blockers_json)
-  [[ $(jq 'length' <<<"$port_blockers") == 0 ]] || { rm_error "检测到外部 ListenAddress，拒绝自动修改 SSH 端口: $(jq -c . <<<"$port_blockers")"; return "$RM_RC_PRECONDITION"; }
-  tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
+  [[ $(jq 'length' <<<"$port_blockers") == 0 ]] || {
+    rm_error "检测到外部 ListenAddress，拒绝自动修改 SSH 端口: $(jq -c . <<<"$port_blockers")"
+    return "$RM_RC_PRECONDITION"
+  }
+
+  tmp=$(rm_safe_tmpdir)
+  policy="$tmp/policy.json"
+  ssh_policy_load_or_init "$policy"
   current_ports=$(jq -c '.ports' "$policy")
   jq -e --argjson p "$keep" 'index($p)!=null' <<<"$current_ports" >/dev/null || {
     rm_error '要保留的端口不在当前已提交 SSH 端口列表中'
     rm -rf "$tmp"
     return "$RM_RC_PRECONDITION"
   }
+
   remove_ports=$(jq -c --argjson p "$keep" '[.[]|select(.!=$p)]' <<<"$current_ports")
-  jq --argjson p "$keep" '.ports=[$p]' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  rm_capture_output result ssh_apply_policy_protected "$policy" remove-old-port root || { local rc=$?; rm -rf "$tmp"; return "$rc"; }
-  txid=$(jq -r .transaction_id <<<"$result")
-  tx_update "$txid" '.ssh.firewall_remove_after_confirm=$ports' --argjson ports "$remove_ports"
+  jq --argjson p "$keep" '.ports=[$p]' "$policy" >"$tmp/p2"
+  mv "$tmp/p2" "$policy"
+
+  rm_capture_output result ssh_apply_policy_protected "$policy" remove-old-port root "" "" "$remove_ports" || {
+    local rc=$?
+    rm -rf "$tmp"
+    return "$rc"
+  }
   printf '%s\n' "$result"
   rm -rf "$tmp"
 }
@@ -935,10 +1049,7 @@ ssh_rollback_pending() {
   else
     ssh_restart_mode "$mode" || rc=$RM_RC_RECOVERY_INCOMPLETE
   fi
-  while IFS= read -r p; do
-    [[ -n $p ]] || continue
-    fw_release_ssh_port "$p" || rc=$RM_RC_RECOVERY_INCOMPLETE
-  done < <(jq -r '.ssh.firewall_added_ports[]? // empty' "$f" 2>/dev/null || true)
+  ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
   ssh_protection_disable
   return "$rc"
 }
