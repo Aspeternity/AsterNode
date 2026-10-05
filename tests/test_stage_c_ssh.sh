@@ -500,7 +500,10 @@ EOF
   rc=$?
   set -e
   unset RM_SSH_TEST_SOCKET_RUNTIME_LISTEN
-  assert_eq 20 "$rc" 'socket migration did not rollback after losing IPv4 listeners'
+  assert_eq 20 "$rc" 'socket migration did not propagate apply-rollback after losing IPv4 listeners'
+  if ssh_pending_tx_id >/dev/null 2>&1; then
+    fail 'family-mismatch rollback left an APPLIED_PENDING SSH transaction'
+  fi
   assert_json "$(cat "$RM_SSH_POLICY")" '
     .ports==[22] and
     (.listen_families|sort)==["ipv4","ipv6"]
