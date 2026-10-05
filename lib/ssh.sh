@@ -34,15 +34,80 @@ ssh_effective_text() {
   "$bin" -T -C "user=$user,host=$host,addr=$addr" 2>/dev/null
 }
 
+ssh_socket_listen_text() {
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    if [[ -f $RM_SSH_SOCKET_DROPIN ]]; then
+      awk -F= '$1=="ListenStream" && length($2)>0 {print $2 " (Stream)"}' "$RM_SSH_SOCKET_DROPIN"
+    else
+      printf '%b\n' "${RM_SSH_TEST_SOCKET_LISTEN:-22 (Stream)}"
+    fi
+    return
+  fi
+  systemctl is-active --quiet ssh.socket 2>/dev/null || return "$RM_RC_PRECONDITION"
+  systemctl show ssh.socket --property=Listen --value 2>/dev/null
+}
+
+ssh_socket_endpoints() {
+  local text token
+  text=$(ssh_socket_listen_text) || return $?
+  while IFS= read -r token; do
+    [[ -n $token ]] || continue
+    if [[ $token =~ ^[0-9]+$ ||
+          $token =~ ^\[[^]]+\]:[0-9]+(%[^[:space:]]+)?$ ||
+          $token =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+      printf '%s\n' "$token"
+    fi
+  done < <(printf '%s\n' "$text" | sed -E 's/[[:space:]]+\(Stream\)/\n/g' | tr ' ' '\n')
+}
+
+ssh_socket_listen_ports() {
+  local endpoint port
+  while IFS= read -r endpoint; do
+    [[ -n $endpoint ]] || continue
+    if [[ $endpoint =~ ^([0-9]+)$ ]]; then
+      port=${BASH_REMATCH[1]}
+    elif [[ $endpoint =~ ^\[[^]]+\]:([0-9]+)(%[^[:space:]]+)?$ ]]; then
+      port=${BASH_REMATCH[1]}
+    elif [[ $endpoint =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:([0-9]+)$ ]]; then
+      port=${BASH_REMATCH[1]}
+    else
+      continue
+    fi
+    printf '%s\n' "$port"
+  done < <(ssh_socket_endpoints) | sort -nu
+}
+
 ssh_listen_ports() {
-  if [[ ${RM_TEST_MODE} == 1 && -n ${RM_SSH_TEST_PORTS:-} ]]; then tr ',' '\n' <<<"$RM_SSH_TEST_PORTS"; return 0; fi
+  local mode
+  mode=$(ssh_service_mode)
+  if [[ $mode == socket ]]; then
+    ssh_socket_listen_ports
+    return
+  fi
+  if [[ ${RM_TEST_MODE} == 1 && -n ${RM_SSH_TEST_PORTS:-} ]]; then
+    tr ',' '\n' <<<"$RM_SSH_TEST_PORTS"
+    return
+  fi
   if rm_have ss; then
     ss -H -lntp 2>/dev/null | awk '$0 ~ /sshd/ {a=$4; sub(/^.*:/,"",a); if(a~/^[0-9]+$/) print a}' | sort -nu
   fi
 }
 
 ssh_listen_families_json() {
-  local raw
+  local mode raw endpoint families=''
+  mode=$(ssh_service_mode)
+  if [[ $mode == socket ]]; then
+    while IFS= read -r endpoint; do
+      [[ -n $endpoint ]] || continue
+      if [[ $endpoint =~ ^[0-9]+$ || $endpoint =~ ^\[ ]]; then
+        families+="ipv6"$'\n'
+      elif [[ $endpoint =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+: ]]; then
+        families+="ipv4"$'\n'
+      fi
+    done < <(ssh_socket_endpoints)
+    printf '%s' "$families" | jq -R -s 'split("\n")|map(select(length>0))|unique|sort'
+    return
+  fi
   if [[ ${RM_TEST_MODE} == 1 ]]; then
     raw=${RM_SSH_TEST_LISTEN_FAMILIES:-ipv4,ipv6}
     tr ',' '\n' <<<"$raw" | jq -R -s 'split("\n")|map(select(.=="ipv4" or .=="ipv6"))|unique|sort'
@@ -516,7 +581,7 @@ Description=AsterNode SSH rollback protection
 After=local-fs.target
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/relay-manager ssh rollback-pending
+ExecStart=/usr/local/bin/relay-manager ssh rollback-pending --boot-guard
 EOS
   cat >"$guard" <<'EOS'
 [Unit]
@@ -796,12 +861,21 @@ ssh_confirm_pending() {
 }
 
 ssh_rollback_pending() {
-  local tx mode rc=0 f p
+  local context=${1:-normal} tx mode rc=0 f p restore_services=true
+  [[ $context == normal || $context == --boot-guard ]] || return "$RM_RC_PRECONDITION"
   tx=$(ssh_pending_tx_id) || { ssh_protection_disable; return 0; }
   f=$(tx_file "$tx")
-  mode=$(ssh_service_mode)
-  tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' || rc=$?
-  ssh_restart_mode "$mode" || rc=$RM_RC_RECOVERY_INCOMPLETE
+  if [[ $context == --boot-guard ]]; then
+    restore_services=false
+  else
+    mode=$(ssh_service_mode)
+  fi
+  tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' "$restore_services" || rc=$?
+  if [[ $context == --boot-guard ]]; then
+    rm_systemctl daemon-reload || rc=$RM_RC_RECOVERY_INCOMPLETE
+  else
+    ssh_restart_mode "$mode" || rc=$RM_RC_RECOVERY_INCOMPLETE
+  fi
   while IFS= read -r p; do
     [[ -n $p ]] || continue
     fw_release_ssh_port "$p" || rc=$RM_RC_RECOVERY_INCOMPLETE
@@ -809,3 +883,4 @@ ssh_rollback_pending() {
   ssh_protection_disable
   return "$rc"
 }
+
