@@ -284,9 +284,17 @@ export RM_SSH_TEST_PORTS=2222
 remove_pending=$(ssh_begin_remove_old_port 2222)
 remove_tx=$(jq -r .transaction_id <<<"$remove_pending")
 export RM_SSH_TEST_COMMIT=COMMIT
-remove_committed=$(ssh_confirm_pending "$remove_tx")
+export RM_UFW_TEST_STDOUT=1
+remove_stderr="$root/remove-confirm-stderr.txt"
+remove_committed=$(ssh_confirm_pending "$remove_tx" 2>"$remove_stderr")
+unset RM_UFW_TEST_STDOUT
 unset RM_SSH_TEST_COMMIT
 assert_json "$remove_committed" '.status=="committed_after_manual_verification"'
+grep -Fq 'Rule deleted' "$remove_stderr" ||
+  fail 'UFW delete chatter was not preserved on stderr during SSH confirm'
+if grep -Fq 'Rule deleted' <<<"$remove_committed"; then
+  fail 'UFW delete chatter polluted SSH confirm JSON stdout'
+fi
 assert_json "$(cat "$RM_SSH_POLICY")" '.ports==[2222]'
 assert_json "$(ssh_runtime_ports_json root)" '.effective==[2222] and .actual==[2222]'
 
