@@ -313,11 +313,12 @@ remove_all_nodes_and_manager() {
   REMOVE_PRESERVED_PATHS=()
   remove_preflight || return $?
 
-  local recovery_backup='' nid preserved='[]' p
+  local recovery_backup='' nid preserved='[]' p rc=0
   if [[ $purge_backups == false ]]; then
-    recovery_backup=$(backup_create config) || {
+    rm_capture_output recovery_backup backup_create config || {
+      rc=$?
       rm_error '卸载前恢复点创建失败，拒绝继续卸载。'
-      return $?
+      return "$rc"
     }
   fi
 

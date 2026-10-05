@@ -495,7 +495,7 @@ ssh_add_public_key() {
     return 0
   fi
   printf '%s\n' "$line" >>"$tmp"
-  tx=$(tx_begin ssh-add-key) || { $created_dir && rmdir "$dir" 2>/dev/null || true; return $?; }
+  rm_capture_output tx tx_begin ssh-add-key || { rc=$?; $created_dir && rmdir "$dir" 2>/dev/null || true; return "$rc"; }
   tx_stage_file "$tx" "$tmp" "$path" 0600 "$owner" || {
     tx_rollback "$tx" 'key stage failed' || true
     $created_dir && rmdir "$dir" 2>/dev/null || true
@@ -557,7 +557,7 @@ ssh_remove_public_key() {
   done <"$path"
   ((removed>0)) || return "$RM_RC_PRECONDITION"
 
-  tx=$(tx_begin ssh-remove-key) || return $?
+  rm_capture_output tx tx_begin ssh-remove-key || return $?
   tx_stage_file "$tx" "$tmp" "$path" 0600 "$owner" || { tx_rollback "$tx" 'key removal stage failed' || true; return "$RM_RC_PRECONDITION"; }
   tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'key removal apply failed' || true; return "$rc"; }
   tx_commit "$tx" || return $?
@@ -658,7 +658,7 @@ EOS
     service:ssh) guard_dest=$RM_SSH_SERVICE_GUARD_DROPIN ;;
     service:sshd) guard_dest=$RM_SSHD_SERVICE_GUARD_DROPIN ;;
   esac
-  tx=$(tx_begin ssh-protection) || { rm -rf "$tmpdir"; return $?; }
+  rm_capture_output tx tx_begin ssh-protection || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   tx_stage_file "$tx" "$svc" "$RM_SSH_PROTECT_SERVICE" 0644 root:root || rc=$?
   ((rc==0)) && tx_stage_file "$tx" "$timer" "$RM_SSH_PROTECT_TIMER" 0644 root:root || rc=$?
   ((rc==0)) && tx_stage_file "$tx" "$guard" "$RM_SSH_BOOT_GUARD_SERVICE" 0644 root:root || rc=$?
@@ -677,7 +677,7 @@ EOS
     systemctl enable --now relay-manager-ssh-rollback.timer >/dev/null || { tx_rollback "$tx" 'protect timer activation failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
     systemctl is-active --quiet relay-manager-ssh-rollback.timer || { tx_rollback "$tx" 'protect timer not active' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
   fi
-  tx_commit "$tx" || { rm -rf "$tmpdir"; return $?; }
+  tx_commit "$tx" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   state_init >/dev/null
   state_add_owned_file /etc/systemd/system/relay-manager-ssh-rollback.service "$(rm_sha256_file "$RM_SSH_PROTECT_SERVICE")"
   state_add_owned_file /etc/systemd/system/relay-manager-ssh-rollback.timer "$(rm_sha256_file "$RM_SSH_PROTECT_TIMER")"
@@ -747,7 +747,7 @@ ssh_apply_policy_protected() {
   ssh_protection_setup "$deadline" "$mode" || return $?
   tmpdir=$(rm_safe_tmpdir); drop="$tmpdir/ssh.conf"; socket="$tmpdir/socket.conf"
   ssh_policy_render_dropin "$policy" "$drop"; ssh_socket_render_override "$policy" "$socket"
-  tx=$(tx_begin "ssh-change:$change" "$deadline") || { ssh_protection_disable; rm -rf "$tmpdir"; return $?; }
+  rm_capture_output tx tx_begin "ssh-change:$change" "$deadline" || { rc=$?; ssh_protection_disable; rm -rf "$tmpdir"; return "$rc"; }
   tx_update "$tx" '.ssh={change:$change,ports:$ports,listen_families:$families,target_user:$user}' \
     --arg change "$change" --argjson ports "$(jq '.ports' "$policy")" \
     --argjson families "$(jq '.listen_families' "$policy")" --arg user "$target_user"
@@ -783,14 +783,14 @@ ssh_begin_port_migration() {
     rm_error '新 SSH 端口已被占用'
     return "$RM_RC_PRECONDITION"
   fi
-  fw_result=$(fw_ensure_ssh_port "$newport") || return $?
+  rm_capture_output fw_result fw_ensure_ssh_port "$newport" || return $?
   fw_added=$(jq -r '.added // false' <<<"$fw_result")
 
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   ports=$(jq --argjson p "$newport" '.ports + [$p] | unique' "$policy")
   jq --argjson ports "$ports" '.ports=$ports' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
 
-  result=$(ssh_apply_policy_protected "$policy" port-migration root) || {
+  rm_capture_output result ssh_apply_policy_protected "$policy" port-migration root || {
     rc=$?
     [[ $fw_added == true ]] && fw_release_ssh_port "$newport" || true
     rm -rf "$tmp"
@@ -818,7 +818,7 @@ ssh_begin_remove_old_port() {
   }
   remove_ports=$(jq -c --argjson p "$keep" '[.[]|select(.!=$p)]' <<<"$current_ports")
   jq --argjson p "$keep" '.ports=[$p]' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  result=$(ssh_apply_policy_protected "$policy" remove-old-port root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }
+  rm_capture_output result ssh_apply_policy_protected "$policy" remove-old-port root || { local rc=$?; rm -rf "$tmp"; return "$rc"; }
   txid=$(jq -r .transaction_id <<<"$result")
   tx_update "$txid" '.ssh.firewall_remove_after_confirm=$ports' --argjson ports "$remove_ports"
   printf '%s\n' "$result"
@@ -855,7 +855,7 @@ ssh_begin_disable_password() {
   [[ $(jq 'length' <<<"$blockers") == 0 ]] || { rm_error "检测到外部认证/MFA/CA 配置，拒绝自动关闭密码: $(jq -c . <<<"$blockers")"; return "$RM_RC_PRECONDITION"; }
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   jq '.password_authentication="no"|.kbd_interactive_authentication="no"' "$policy" >"$tmp/p2"; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" disable-password "$user") || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  local result; rm_capture_output result ssh_apply_policy_protected "$policy" disable-password "$user" || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
 }
 
 ssh_record_sudo_verified() {
@@ -882,7 +882,7 @@ ssh_begin_root_policy() {
   fi
   tmp=$(rm_safe_tmpdir); policy="$tmp/policy.json"; ssh_policy_load_or_init "$policy"
   if [[ $policy_name == disable ]]; then jq '.permit_root_login="no"' "$policy" >"$tmp/p2"; else jq '.permit_root_login="prohibit-password"' "$policy" >"$tmp/p2"; fi; mv "$tmp/p2" "$policy"
-  local result; result=$(ssh_apply_policy_protected "$policy" "root-$policy_name" root) || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
+  local result; rm_capture_output result ssh_apply_policy_protected "$policy" "root-$policy_name" root || { local rc=$?; rm -rf "$tmp"; return "$rc"; }; printf '%s\n' "$result"; rm -rf "$tmp"
 }
 
 ssh_confirm_pending() {
