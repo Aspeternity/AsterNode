@@ -432,7 +432,7 @@ fw_enable_safe() {
 }
 
 fw_ensure_ssh_port() {
-  local port=$1 status comment rule existing
+  local port=$1 txid=${2:-} status comment rule existing owned_rule
   rm_valid_port "$port" || return "$RM_RC_PRECONDITION"
   status=$(fw_status_json)
   if ! jq -e '.installed==true and .active==true' <<<"$status" >/dev/null; then
@@ -448,24 +448,40 @@ fw_ensure_ssh_port() {
     return 0
   fi
   rule=$(fw_rule_args_json allow any "$port" "$comment")
+  if [[ -n $txid ]]; then
+    [[ -f $(tx_file "$txid") ]] || return "$RM_RC_PRECONDITION"
+    tx_update "$txid" '.ssh=((.ssh//{}) + {firewall_added_ports:(((.ssh.firewall_added_ports//[]) + [$p])|unique)})'       --argjson p "$port" || return $?
+  fi
   fw_exec_rule_json "$rule" add append >&2 || return "$RM_RC_APPLY_ROLLED_BACK"
   fw_marker_present "$comment" || {
     fw_exec_rule_json "$rule" delete >&2 || true
     rm_error 'UFW 写入后未能读回 SSH 规则'
     return "$RM_RC_APPLY_ROLLED_BACK"
   }
-  fw_store_rule "$(jq -n --arg c "$comment" --argjson p "$port" --argjson a "$rule" '{comment:$c,port:$p,kind:"ssh-allow",source:"any",args:$a}')"
+  owned_rule=$(jq -n --arg c "$comment" --argjson p "$port" --argjson a "$rule"     '{comment:$c,port:$p,kind:"ssh-allow",source:"any",args:$a}')
+  if ! fw_store_rule "$owned_rule"; then
+    fw_exec_rule_json "$rule" delete >&2 || return "$RM_RC_RECOVERY_INCOMPLETE"
+    rm_error 'UFW 规则已写入但所有权状态记录失败，已撤销规则'
+    return "$RM_RC_APPLY_ROLLED_BACK"
+  fi
   jq -n --argjson p "$port" '{status:"added",port:$p,added:true}'
 }
 
 fw_release_ssh_port() {
-  local port=$1 entry comment
+  local port=$1 entry comment rule
   rm_valid_port "$port" || return "$RM_RC_PRECONDITION"
   state_init >/dev/null
   comment="relay-manager:ssh:$port"
   entry=$(jq -c --arg c "$comment" '.owned_firewall_rules[]?|select((.comment//"")==$c)' "$RM_STATE_FILE" | head -n1)
-  [[ -n $entry ]] || return 0
-  fw_exec_rule_json "$(jq -c .args <<<"$entry")" delete >&2 || return "$RM_RC_RECOVERY_INCOMPLETE"
+  if [[ -n $entry ]]; then
+    rule=$(jq -c .args <<<"$entry")
+  else
+    fw_marker_present "$comment" || return 0
+    rule=$(fw_rule_args_json allow any "$port" "$comment")
+  fi
+  if fw_marker_present "$comment"; then
+    fw_exec_rule_json "$rule" delete >&2 || return "$RM_RC_RECOVERY_INCOMPLETE"
+  fi
   fw_remove_owned_rule_from_state "$comment"
 }
 
