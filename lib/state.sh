@@ -141,7 +141,7 @@ state_bump_revision() { state_update_filter '.config_revision += 1'; }
 state_add_owned_file() {
   local path=$1 sha=${2:-}
   [[ $path == /* ]] || return "$RM_RC_PRECONDITION"
-  state_update_filter '.owned_files = ((.owned_files + [{path:$path,sha256:$sha}]) | unique_by(.path))' --arg path "$path" --arg sha "$sha"
+  state_update_filter '.owned_files = ([.owned_files[]? | select(.path!=$path)] + [{path:$path,sha256:$sha}])' --arg path "$path" --arg sha "$sha"
 }
 
 state_add_owned_service() {

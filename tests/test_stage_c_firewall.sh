@@ -284,7 +284,26 @@ assert_json "$status" '
 '
 grep -Fq 'prepend allow to any port 443' "$RM_UFW_LOG" ||
   fail 'temporary public allow was not inserted ahead of managed deny'
-assert_json "$(cat "$RM_STATE_FILE")" 'any(.temporary_opens[]; .node_id=="node-fw")'
+assert_json "$(cat "$RM_STATE_FILE")" '
+  any(.temporary_opens[]; .node_id=="node-fw" and .phase=="APPLIED") and
+  any(.owned_files[]; .path=="/etc/systemd/system/relay-manager-temp-node-fw.service") and
+  any(.owned_files[]; .path=="/etc/systemd/system/relay-manager-temp-node-fw.timer") and
+  (.owned_services|index("relay-manager-temp-node-fw.service"))!=null and
+  (.owned_services|index("relay-manager-temp-node-fw.timer"))!=null
+'
+
+temp_tx_file=''
+for f in "$RM_TX_DIR"/*/transaction.json; do
+  [[ -f $f ]] || continue
+  if jq -e '.type=="firewall-temp-open"' "$f" >/dev/null 2>&1; then
+    temp_tx_file=$f
+  fi
+done
+[[ -n $temp_tx_file ]] || fail 'temporary access transaction record missing'
+assert_json "$(cat "$temp_tx_file")" '
+  .status=="COMMITTED" and
+  any(.services[]; .name=="relay-manager-temp-node-fw.timer" and .managed_change==true)
+'
 
 fw_expire_temp node-fw
 assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="node-fw")]|length)==0'
@@ -295,4 +314,47 @@ grep -Fq -- '--force delete allow to any port 443' "$RM_UFW_LOG" ||
 [[ -f "$root/etc/systemd/system/relay-manager-temp-node-fw.timer" ]] ||
   fail 'expired timer unit should remain as an inert owned file'
 
-pass 'Stage C UFW UCF integrity, safe enable, whitelist ownership, conflict refusal and timed public access'
+# If the manager dies after committing the timer but before writing the state
+# intent, the expiry service must still be able to disable its own timer.
+: >"$RM_SYSTEMCTL_LOG"
+fw_expire_temp ghost-node
+grep -Fq 'disable relay-manager-temp-ghost-node.timer' "$RM_SYSTEMCTL_LOG" ||
+  fail 'orphan temporary-access timer did not self-disable without state intent'
+
+# Explicit phase tracking distinguishes "rule definitely absent" from the
+# uncertain/live rule states without consulting UFW status visibility.
+armed_rule=$(fw_rule_args_json allow any 61237 'relay-manager:armed:temporary:1')
+state_update_filter '.temporary_opens += [{
+  node_id:"armed",deadline_epoch:1,rule_args:$rule,unit:"relay-manager-temp-armed",phase:"ARMED"
+}]' --argjson rule "$armed_rule"
+: >"$RM_UFW_LOG"
+fw_expire_temp armed
+if grep -Fq -- '--force delete' "$RM_UFW_LOG"; then
+  fail 'ARMED temporary access attempted to delete a rule that was never started'
+fi
+assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="armed")]|length)==0'
+
+applying_rule=$(fw_rule_args_json allow any 61238 'relay-manager:applying:temporary:1')
+state_update_filter '.temporary_opens += [{
+  node_id:"applying",deadline_epoch:1,rule_args:$rule,unit:"relay-manager-temp-applying",phase:"APPLYING"
+}]' --argjson rule "$applying_rule"
+: >"$RM_UFW_LOG"
+fw_expire_temp applying
+grep -Fq -- '--force delete allow to any port 61238 proto tcp comment relay-manager:applying:temporary:1' "$RM_UFW_LOG" ||
+  fail 'APPLYING temporary access did not conservatively delete the possibly-live rule'
+assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="applying")]|length)==0'
+
+# A failed UFW add must drop the persisted intent and disarm the timer.
+: >"$RM_SYSTEMCTL_LOG"
+export RM_UFW_TEST_FAIL=1
+set +e
+fw_temp_open node-fw 10 >/dev/null 2>&1
+rc=$?
+set -e
+unset RM_UFW_TEST_FAIL
+assert_eq 20 "$rc" 'failed temporary UFW allow returned the wrong code'
+assert_json "$(cat "$RM_STATE_FILE")" '([.temporary_opens[]|select(.node_id=="node-fw")]|length)==0'
+grep -Fq 'disable relay-manager-temp-node-fw.timer' "$RM_SYSTEMCTL_LOG" ||
+  fail 'failed temporary UFW allow left the expiry timer armed'
+
+pass 'Stage C UFW UCF integrity, safe enable, whitelist ownership, crash-safe timed public access'

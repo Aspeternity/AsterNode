@@ -646,22 +646,60 @@ fw_temp_unit_names() {
   printf 'relay-manager-temp-%s\n' "$safe"
 }
 
+fw_temp_lock_acquire() {
+  rm_mkdir_secure 0700 "$RM_RUN_DIR" || return $?
+  rm_require_cmds flock || return $?
+  [[ -z ${RM_FW_TEMP_LOCK_FD:-} ]] || return "$RM_RC_INTERNAL"
+  exec {RM_FW_TEMP_LOCK_FD}>"$RM_RUN_DIR/firewall-temp.lock" || return "$RM_RC_INTERNAL"
+  flock -x "$RM_FW_TEMP_LOCK_FD" || {
+    exec {RM_FW_TEMP_LOCK_FD}>&- || true
+    unset RM_FW_TEMP_LOCK_FD
+    return "$RM_RC_INTERNAL"
+  }
+}
+
+fw_temp_lock_release() {
+  if [[ -n ${RM_FW_TEMP_LOCK_FD:-} ]]; then
+    flock -u "$RM_FW_TEMP_LOCK_FD" 2>/dev/null || true
+    exec {RM_FW_TEMP_LOCK_FD}>&- || true
+    unset RM_FW_TEMP_LOCK_FD
+  fi
+}
+
 fw_temp_open() {
-  local nid=$1 minutes=${2:-10}
+  local nid=$1 minutes=${2:-10} rc=0
   [[ $minutes =~ ^[0-9]+$ ]] && ((minutes>=1 && minutes<=1440)) || return "$RM_RC_PRECONDITION"
   fw_require_manageable || return $?
+  fw_temp_lock_acquire || return $?
+  _fw_temp_open_locked "$nid" "$minutes" || rc=$?
+  fw_temp_lock_release
+  return "$rc"
+}
+
+_fw_temp_open_locked() {
+  local nid=$1 minutes=$2
+  local node port now deadline unit comment rule service timer service_path timer_path
+  local tmpdir tx rc=0 service_sha timer_sha
+
   state_init >/dev/null
   if jq -e --arg id "$nid" '.temporary_opens[]?|select(.node_id==$id)' "$RM_STATE_FILE" >/dev/null; then
     rm_error '该节点已有临时公网开放，请先等待到期或手动 expire-temp。'
     return "$RM_RC_PRECONDITION"
   fi
-  local node port now deadline unit comment rule service timer tmpdir tx rc=0
+
   node=$(state_get_node "$nid") || return "$RM_RC_PRECONDITION"
   port=$(jq -r .listen_port <<<"$node")
-  now=$(rm_epoch); deadline=$((now+minutes*60)); unit=$(fw_temp_unit_names "$nid")
+  now=$(rm_epoch)
+  deadline=$((now+minutes*60))
+  unit=$(fw_temp_unit_names "$nid")
   comment="relay-manager:$nid:temporary:$deadline"
   rule=$(fw_rule_args_json allow any "$port" "$comment")
-  tmpdir=$(rm_safe_tmpdir); service="$tmpdir/$unit.service"; timer="$tmpdir/$unit.timer"
+  service_path=$(rm_path "/etc/systemd/system/$unit.service")
+  timer_path=$(rm_path "/etc/systemd/system/$unit.timer")
+
+  tmpdir=$(rm_safe_tmpdir)
+  service="$tmpdir/$unit.service"
+  timer="$tmpdir/$unit.timer"
   cat >"$service" <<EOS
 [Unit]
 Description=AsterNode temporary public access expiry for $nid
@@ -680,47 +718,177 @@ Unit=$unit.service
 [Install]
 WantedBy=timers.target
 EOS
-  rm_capture_output tx tx_begin firewall-temp-open "$deadline" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
-  tx_stage_file "$tx" "$service" "$(rm_path /etc/systemd/system/$unit.service)" 0644 root:root || rc=$?
-  ((rc==0)) && tx_stage_file "$tx" "$timer" "$(rm_path /etc/systemd/system/$unit.timer)" 0644 root:root || rc=$?
-  if ((rc!=0)); then tx_rollback "$tx" 'timer stage failed' || true; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; fi
-  tx_apply "$tx" || { rc=$?; tx_rollback "$tx" 'timer apply failed' || true; rm -rf "$tmpdir"; return "$rc"; }
+
+  rm_capture_output tx tx_begin firewall-temp-open "$deadline" || {
+    rc=$?
+    rm -rf "$tmpdir"
+    return "$rc"
+  }
+  tx_record_service "$tx" "$unit.timer" true || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$service" "$service_path" 0644 root:root || rc=$?
+  ((rc==0)) && tx_stage_file "$tx" "$timer" "$timer_path" 0644 root:root || rc=$?
+  if ((rc!=0)); then
+    tx_rollback "$tx" 'timer stage failed' || true
+    rm -rf "$tmpdir"
+    return "$RM_RC_PRECONDITION"
+  fi
+
+  tx_apply "$tx" || {
+    rc=$?
+    tx_rollback "$tx" 'timer apply failed' || true
+    rm -rf "$tmpdir"
+    return "$rc"
+  }
 
   if [[ ${RM_TEST_MODE} == 1 ]]; then
     rm_systemctl daemon-reload
     rm_systemctl enable "$unit.timer"
     rm_systemctl start "$unit.timer"
   else
-    systemctl daemon-reload || { tx_rollback "$tx" 'timer daemon-reload failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
-    systemctl enable --now "$unit.timer" >/dev/null || { tx_rollback "$tx" 'timer enable failed' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
-    systemctl is-active --quiet "$unit.timer" || { tx_rollback "$tx" 'timer inactive' || true; rm -rf "$tmpdir"; return "$RM_RC_APPLY_ROLLED_BACK"; }
+    systemctl daemon-reload || {
+      tx_rollback "$tx" 'timer daemon-reload failed' || true
+      rm -rf "$tmpdir"
+      return "$RM_RC_APPLY_ROLLED_BACK"
+    }
+    systemctl enable --now "$unit.timer" >/dev/null || {
+      tx_rollback "$tx" 'timer enable failed' || true
+      rm -rf "$tmpdir"
+      return "$RM_RC_APPLY_ROLLED_BACK"
+    }
+    systemctl is-active --quiet "$unit.timer" || {
+      tx_rollback "$tx" 'timer inactive' || true
+      rm -rf "$tmpdir"
+      return "$RM_RC_APPLY_ROLLED_BACK"
+    }
   fi
 
-  # Public allow must precede the managed node deny, otherwise UFW first-match semantics would keep it blocked.
+  # The timer service uses the same lock, so it cannot expire the intent while
+  # this manager is still arming the UFW rule.
+  if ! tx_commit "$tx"; then
+    rc=$?
+    tx_rollback "$tx" 'temporary access timer commit failed' || rc=$RM_RC_RECOVERY_INCOMPLETE
+    rm -rf "$tmpdir"
+    return "$rc"
+  fi
+
+  service_sha=$(rm_sha256_file "$service_path")
+  timer_sha=$(rm_sha256_file "$timer_path")
+
+  # Persist ownership and cleanup intent before the live public allow.
+  if ! state_update_filter '
+      .owned_files=(
+        [.owned_files[]? | select(.path!=$service_path and .path!=$timer_path)] +
+        [
+          {path:$service_path,sha256:$service_sha},
+          {path:$timer_path,sha256:$timer_sha}
+        ]
+      )
+      | .owned_services=((.owned_services + [$service_name,$timer_name]) | unique)
+      | .temporary_opens=([.temporary_opens[]|select(.node_id!=$nid)] + [{
+          node_id:$nid,deadline_epoch:$deadline,rule_args:$rule,unit:$unit,phase:"ARMED"
+        }])' \
+      --arg service_path "/etc/systemd/system/$unit.service" \
+      --arg service_sha "$service_sha" \
+      --arg timer_path "/etc/systemd/system/$unit.timer" \
+      --arg timer_sha "$timer_sha" \
+      --arg service_name "$unit.service" \
+      --arg timer_name "$unit.timer" \
+      --arg nid "$nid" \
+      --argjson deadline "$deadline" \
+      --argjson rule "$rule" \
+      --arg unit "$unit"; then
+    if [[ ${RM_TEST_MODE} == 1 ]]; then
+      rm_systemctl disable "$unit.timer" >/dev/null 2>&1 || true
+    else
+      systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$tmpdir"
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  fi
+
+  # Mark the uncertain write window before invoking UFW. If the manager dies
+  # during the add, expiry knows the rule may exist and must attempt deletion.
+  state_update_filter '(.temporary_opens[]|select(.node_id==$nid)).phase="APPLYING"' --arg nid "$nid" || {
+    if [[ ${RM_TEST_MODE} == 1 ]]; then
+      rm_systemctl disable "$unit.timer" >/dev/null 2>&1 || true
+    else
+      systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$tmpdir"
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  }
+
+  # Public allow must precede the managed node deny, otherwise UFW first-match
+  # semantics would keep it blocked.
   if ! fw_exec_rule_json "$rule" add prepend; then
-    [[ ${RM_TEST_MODE} == 1 ]] && rm_systemctl disable "$unit.timer" || systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true
-    tx_rollback "$tx" 'temporary UFW rule failed' || true
+    fw_exec_rule_json "$rule" delete >/dev/null 2>&1 || true
+    if [[ ${RM_TEST_MODE} == 1 ]]; then
+      rm_systemctl disable "$unit.timer" >/dev/null 2>&1 || true
+    else
+      systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true
+    fi
+    state_update_filter '.temporary_opens=[.temporary_opens[]|select(.node_id!=$nid)]' --arg nid "$nid" || true
     rm -rf "$tmpdir"
     return "$RM_RC_APPLY_ROLLED_BACK"
   fi
-  tx_commit "$tx" || { fw_exec_rule_json "$rule" delete || true; rm -rf "$tmpdir"; return "$RM_RC_RECOVERY_INCOMPLETE"; }
-  state_update_filter '.temporary_opens=([.temporary_opens[]|select(.node_id!=$nid)] + [{node_id:$nid,deadline_epoch:$deadline,rule_args:$rule,unit:$unit}])' \
-    --arg nid "$nid" --argjson deadline "$deadline" --argjson rule "$rule" --arg unit "$unit"
+
+  if ! state_update_filter '(.temporary_opens[]|select(.node_id==$nid)).phase="APPLIED"' --arg nid "$nid"; then
+    # Keep the APPLYING intent, active timer and live rule. Recovery will treat
+    # APPLYING conservatively and delete the rule at expiry.
+    rm -rf "$tmpdir"
+    return "$RM_RC_RECOVERY_INCOMPLETE"
+  fi
+
   rm -rf "$tmpdir"
-  jq -n --arg nid "$nid" --argjson deadline "$deadline" '{status:"temporary_open_applied_unverified",node_id:$nid,deadline_epoch:$deadline,note:"到期只删除本次临时放行；已有连接可能继续，不执行全局 conntrack 清理。"}'
+  jq -n --arg nid "$nid" --argjson deadline "$deadline"     '{status:"temporary_open_applied_unverified",node_id:$nid,deadline_epoch:$deadline,note:"到期只删除本次临时放行；已有连接可能继续，不执行全局 conntrack 清理。"}'
 }
 
 fw_expire_temp() {
-  local nid=$1 entry unit rule
+  local nid=$1 rc=0
+  fw_temp_lock_acquire || return $?
+  _fw_expire_temp_locked "$nid" || rc=$?
+  fw_temp_lock_release
+  return "$rc"
+}
+
+_fw_expire_temp_locked() {
+  local nid=$1 entry unit rule phase
   state_init >/dev/null
+  unit=$(fw_temp_unit_names "$nid")
   entry=$(jq -c --arg id "$nid" '.temporary_opens[]|select(.node_id==$id)' "$RM_STATE_FILE" 2>/dev/null || true)
-  [[ -n $entry ]] || return 0
-  unit=$(jq -r .unit <<<"$entry"); rule=$(jq -c .rule_args <<<"$entry")
-  fw_exec_rule_json "$rule" delete || { rm_error '临时开放规则删除失败'; return "$RM_RC_RECOVERY_INCOMPLETE"; }
-  if [[ ${RM_TEST_MODE} == 1 ]]; then rm_systemctl disable "$unit.timer" || true
-  else systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true; fi
-  # Unit files are intentionally kept as owned, inert files. Avoid non-transactional rm during expiry.
-  state_update_filter '.temporary_opens=[.temporary_opens[]|select(.node_id!=$nid)]' --arg nid "$nid"
+
+  if [[ -n $entry ]]; then
+    unit=$(jq -r .unit <<<"$entry")
+    rule=$(jq -c .rule_args <<<"$entry")
+    phase=$(jq -r '.phase // "APPLIED"' <<<"$entry")
+    case "$phase" in
+      ARMED)
+        # The intent was persisted, but the live UFW add was never started.
+        ;;
+      APPLYING|APPLIED)
+        fw_exec_rule_json "$rule" delete || {
+          rm_error "临时开放规则处于 $phase 状态且删除失败，保留恢复现场。"
+          return "$RM_RC_RECOVERY_INCOMPLETE"
+        }
+        ;;
+      *)
+        rm_error "临时开放记录 phase 非法: $phase"
+        return "$RM_RC_RECOVERY_INCOMPLETE"
+        ;;
+    esac
+  fi
+
+  # If the manager died after committing the timer but before persisting the
+  # state intent, the expiry service still disables its own timer.
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    rm_systemctl disable "$unit.timer" || true
+  else
+    systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n $entry ]]; then
+    state_update_filter '.temporary_opens=[.temporary_opens[]|select(.node_id!=$nid)]' --arg nid "$nid"
+  fi
 }
 
 fw_reconcile_expired() {

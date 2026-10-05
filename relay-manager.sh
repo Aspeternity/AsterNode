@@ -23,7 +23,11 @@ mutation_access_guard() {
 mutation_guard() {
   mutation_access_guard || return $?
   [[ ${RM_TEST_MODE} == 1 ]] && return 0
-  tx_recover_pending || { local rc=$?; [[ $rc == $RM_RC_RECOVERY_INCOMPLETE ]] && return "$rc"; }
+  tx_recover_pending || {
+    local rc=$?
+    rm_error "事务恢复失败，拒绝开始新的修改操作（rc=$rc）。"
+    return "$rc"
+  }
 }
 
 status_cmd() {
@@ -395,7 +399,8 @@ case "$cmd" in
     rm_require_root || exit $?
     tx_reconcile_pending || {
       rc=$?
-      [[ $rc == "$RM_RC_RECOVERY_INCOMPLETE" ]] && exit "$rc"
+      rm_error "周期事务恢复失败，停止后续 reconcile 写操作（rc=$rc）。"
+      exit "$rc"
     }
     upstream_rotation_reconcile_expired
     fw_reconcile_expired

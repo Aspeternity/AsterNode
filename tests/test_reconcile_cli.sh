@@ -11,18 +11,29 @@ cp "$PROJECT_DIR/relay-manager.sh" "$fixture/relay-manager.sh"
 chmod 0755 "$fixture/relay-manager.sh"
 
 cat >"$fixture/lib/system.sh" <<'EOF'
+RM_RC_PRECONDITION=10
 RM_RC_RECOVERY_INCOMPLETE=21
 
 rm_require_root() {
   printf 'ROOT\n' >>"$CLI_TRACE"
 }
 
+rm_tty_available() {
+  return 0
+}
+
+rm_error() {
+  printf 'ERROR:%s\n' "$*" >>"$CLI_TRACE"
+}
+
 tx_reconcile_pending() {
   printf 'RECONCILE\n' >>"$CLI_TRACE"
+  return "${CLI_RECONCILE_RC:-0}"
 }
 
 tx_recover_pending() {
   printf 'RECOVER\n' >>"$CLI_TRACE"
+  return "${CLI_RECOVER_RC:-0}"
 }
 
 tx_has_conflict() {
@@ -33,6 +44,10 @@ EOF
 cat >"$fixture/lib/node.sh" <<'EOF'
 upstream_rotation_reconcile_expired() {
   printf 'UPSTREAM\n' >>"$CLI_TRACE"
+}
+
+node_set_enabled() {
+  printf 'NODE_MUTATION\n' >>"$CLI_TRACE"
 }
 EOF
 
@@ -80,4 +95,32 @@ if grep -Fxq 'RECOVER' "$trace"; then
   fail 'ordinary periodic reconcile regressed to force recovery'
 fi
 
-pass 'periodic reconcile preserves valid pending transactions and still prunes when conflict-free'
+# Any recovery error must fail closed before a new mutation starts, not only
+# RM_RC_RECOVERY_INCOMPLETE (21).
+: >"$trace"
+set +e
+CLI_TRACE="$trace" CLI_RECOVER_RC=70 RM_TEST_MODE=0 \
+  "$fixture/relay-manager.sh" node enable node-test
+rc=$?
+set -e
+assert_eq 70 "$rc" 'mutation guard swallowed a non-21 transaction recovery error'
+grep -Fxq 'RECOVER' "$trace" || fail 'mutation guard did not run startup recovery'
+if grep -Fxq 'NODE_MUTATION' "$trace"; then
+  fail 'mutation guard continued with a write after recovery failed'
+fi
+
+# Periodic reconcile must also stop before rotation/firewall/prune on any
+# transaction reconciliation error.
+: >"$trace"
+set +e
+CLI_TRACE="$trace" CLI_RECONCILE_RC=70 RM_TEST_MODE=0 \
+  "$fixture/relay-manager.sh" reconcile
+rc=$?
+set -e
+assert_eq 70 "$rc" 'reconcile swallowed a non-21 transaction recovery error'
+grep -Fxq 'RECONCILE' "$trace" || fail 'reconcile did not invoke transaction reconciliation'
+if grep -Eq '^(UPSTREAM|FIREWALL|PRUNE)$' "$trace"; then
+  fail 'reconcile continued with writes after transaction recovery failed'
+fi
+
+pass 'periodic reconcile preserves valid pending transactions and recovery failures fail closed'
