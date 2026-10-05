@@ -704,9 +704,21 @@ ssh_pending_tx_id() {
   return 1
 }
 
+ssh_recoverable_tx_id() {
+  local f
+  for f in "$RM_TX_DIR"/*/transaction.json; do
+    [[ -f $f ]] || continue
+    jq -er 'select(
+      (.status=="PREPARED" or .status=="APPLIED_PENDING" or .status=="ROLLING_BACK") and
+      ((.type // "")|startswith("ssh-change:"))
+    )|.transaction_id' "$f" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 ssh_recovery_guide_json() {
   local tx=${1:-} f='' change='' target_user=root deadline=null mode unit
-  if [[ -z $tx ]]; then tx=$(ssh_pending_tx_id 2>/dev/null || true); fi
+  if [[ -z $tx ]]; then tx=$(ssh_recoverable_tx_id 2>/dev/null || true); fi
   if [[ -n $tx && -f $(tx_file "$tx") ]]; then
     f=$(tx_file "$tx")
     change=$(jq -r '.ssh.change // ""' "$f")
@@ -910,7 +922,7 @@ ssh_confirm_pending() {
 ssh_rollback_pending() {
   local context=${1:-normal} tx mode rc=0 f p restore_services=true
   [[ $context == normal || $context == --boot-guard ]] || return "$RM_RC_PRECONDITION"
-  tx=$(ssh_pending_tx_id) || { ssh_protection_disable; return 0; }
+  tx=$(ssh_recoverable_tx_id) || { ssh_protection_disable; return 0; }
   f=$(tx_file "$tx")
   if [[ $context == --boot-guard ]]; then
     restore_services=false
