@@ -1034,7 +1034,7 @@ ssh_confirm_pending() {
 }
 
 ssh_rollback_pending() {
-  local context=${1:-normal} tx mode rc=0 f p restore_services=true
+  local context=${1:-normal} tx mode rc=0 f restore_services=true
   [[ $context == normal || $context == --boot-guard ]] || return "$RM_RC_PRECONDITION"
   tx=$(ssh_recoverable_tx_id) || { ssh_protection_disable; return 0; }
   f=$(tx_file "$tx")
@@ -1043,14 +1043,29 @@ ssh_rollback_pending() {
   else
     mode=$(ssh_service_mode)
   fi
-  tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' "$restore_services" || rc=$?
-  if [[ $context == --boot-guard ]]; then
-    rm_systemctl daemon-reload || rc=$RM_RC_RECOVERY_INCOMPLETE
-  else
-    ssh_restart_mode "$mode" || rc=$RM_RC_RECOVERY_INCOMPLETE
+
+  # Never tear down the migration firewall/protection while the file
+  # transaction is unresolved. A partial rollback plus firewall cleanup could
+  # make the only still-listening SSH port unreachable.
+  if ! tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' "$restore_services"; then
+    rc=$?
+    rm_error 'SSH 自动回滚未能安全完成；已保留迁移防火墙入口和保护现场，请按 recovery-guide 人工处理。'
+    return "$rc"
   fi
+
+  if [[ $context == --boot-guard ]]; then
+    rm_systemctl daemon-reload || {
+      rm_error 'SSH 文件已回滚，但 systemd daemon-reload 失败；保留迁移防火墙入口。'
+      return "$RM_RC_RECOVERY_INCOMPLETE"
+    }
+  else
+    ssh_restart_mode "$mode" || {
+      rm_error 'SSH 文件已回滚，但服务重启失败；保留迁移防火墙入口。'
+      return "$RM_RC_RECOVERY_INCOMPLETE"
+    }
+  fi
+
   ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
   ssh_protection_disable
   return "$rc"
 }
-
