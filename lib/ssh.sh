@@ -196,28 +196,58 @@ ssh_effective_value() {
   awk -v k="$key" '$1==k {$1=""; sub(/^ /,""); print; exit}' <<<"$text"
 }
 
-ssh_service_unit_name() {
-  local mode
+ssh_socket_accept_text() {
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    printf '%s\n' "${RM_SSH_TEST_SOCKET_ACCEPT:-no}"
+    return 0
+  fi
+  systemctl show ssh.socket -p Accept --value 2>/dev/null
+}
+
+ssh_socket_service_text() {
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    printf '%s\n' "${RM_SSH_TEST_SOCKET_SERVICE:-}"
+    return 0
+  fi
+  systemctl show ssh.socket -p Service --value 2>/dev/null
+}
+
+ssh_startup_service_unit_name() {
+  local mode accept service
   mode=$(ssh_service_mode)
   case "$mode" in
-    service:ssh) printf 'ssh.service\n' ;;
-    service:sshd) printf 'sshd.service\n' ;;
-    socket) printf 'ssh@.service\n' ;;
-    *) return "$RM_RC_PRECONDITION" ;;
+    service:ssh)
+      printf 'ssh.service\n'
+      ;;
+    service:sshd)
+      printf 'sshd.service\n'
+      ;;
+    socket)
+      accept=$(ssh_socket_accept_text 2>/dev/null || true)
+      [[ $accept == no ]] || return "$RM_RC_PRECONDITION"
+      service=$(ssh_socket_service_text 2>/dev/null || true)
+      if [[ -z $service ]]; then
+        # Accept=no sockets activate the same-basename service unless an
+        # explicit Service= is configured. Ubuntu 24.04 uses ssh.service.
+        service=ssh.service
+      fi
+      [[ $service =~ ^[A-Za-z0-9_.@:-]+\.service$ ]] || return "$RM_RC_PRECONDITION"
+      printf '%s\n' "$service"
+      ;;
+    *)
+      return "$RM_RC_PRECONDITION"
+      ;;
   esac
 }
 
 ssh_systemd_execstart_text() {
+  local unit out=''
+  unit=$(ssh_startup_service_unit_name) || return $?
   if [[ ${RM_TEST_MODE} == 1 ]]; then
     printf '%s\n' "${RM_SSH_TEST_EXECSTART:-/usr/sbin/sshd -D}"
     return 0
   fi
-  local unit out=''
-  unit=$(ssh_service_unit_name) || return $?
   out=$(systemctl show "$unit" -p ExecStart --value 2>/dev/null || true)
-  if [[ -z $out && $unit == ssh@.service ]]; then
-    out=$(systemctl show sshd@.service -p ExecStart --value 2>/dev/null || true)
-  fi
   [[ -n $out ]] || return "$RM_RC_PRECONDITION"
   printf '%s\n' "$out"
 }
