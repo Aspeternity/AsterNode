@@ -589,11 +589,8 @@ case_mid_apply_ssh_recovery() (
   wait "$manager_pid" 2>/dev/null || true
 
   guide=$(ssh_recovery_guide_json)
-  assert_json "$guide" --arg tx "$tx" '
-    .pending==true and
-    .transaction_id==$tx and
-    .change=="root-disable"
-  '
+  assert_json "$guide" '.pending==true and .change=="root-disable"'
+  assert_eq "$tx" "$(jq -r .transaction_id <<<"$guide")" 'recovery-guide missed PREPARED partial SSH transaction'
 
   # This is the command executed by the deadline rollback service.
   ssh_rollback_pending
