@@ -36,7 +36,9 @@ ssh_effective_text() {
 
 ssh_socket_listen_text() {
   if [[ ${RM_TEST_MODE} == 1 ]]; then
-    if [[ -f $RM_SSH_SOCKET_DROPIN ]]; then
+    if [[ -n ${RM_SSH_TEST_SOCKET_RUNTIME_LISTEN:-} ]]; then
+      printf '%b\n' "$RM_SSH_TEST_SOCKET_RUNTIME_LISTEN"
+    elif [[ -f $RM_SSH_SOCKET_DROPIN ]]; then
       awk -F= '$1=="ListenStream" && length($2)>0 {print $2 " (Stream)"}' "$RM_SSH_SOCKET_DROPIN"
     else
       printf '%b\n' "${RM_SSH_TEST_SOCKET_LISTEN:-22 (Stream)}"
