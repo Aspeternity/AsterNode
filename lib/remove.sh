@@ -173,6 +173,36 @@ remove_owned_file_if_unchanged() {
   fi
 }
 
+remove_dynamic_temp_units() {
+  local name logical path
+
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    case "$name" in
+      relay-manager-temp-*.timer)
+        rm_systemctl disable --now "$name" >/dev/null 2>&1 || true
+        ;;
+      relay-manager-temp-*.service)
+        rm_systemctl stop "$name" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done < <(jq -r '
+    .owned_services[]?
+    | select(test("^relay-manager-temp-[A-Za-z0-9_.-]+\\.(service|timer)$"))
+  ' "$RM_STATE_FILE")
+
+  while IFS= read -r logical; do
+    [[ -n $logical ]] || continue
+    path=$(rm_path "$logical")
+    remove_owned_file_if_unchanged "$path" || return $?
+  done < <(jq -r '
+    .owned_files[]?.path
+    | select(test("^/etc/systemd/system/relay-manager-temp-[^/]+\\.(service|timer)$"))
+  ' "$RM_STATE_FILE")
+
+  rm_systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
 remove_disable_runtime_units() {
   rm_systemctl disable --now "$RM_MAINT_TIMER" >/dev/null 2>&1 || true
   rm_systemctl stop "$RM_MAINT_SERVICE" >/dev/null 2>&1 || true
@@ -328,6 +358,7 @@ remove_all_nodes_and_manager() {
     fw_remove_node_rules "$nid" || return $?
   done < <(jq -r '.nodes[].node_id' "$RM_STATE_FILE")
 
+  remove_dynamic_temp_units || return $?
   remove_disable_runtime_units
   remove_delete_runtime_unit_files || return $?
   remove_owned_file_if_unchanged "$RM_XRAY_CONFIG"
