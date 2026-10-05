@@ -43,6 +43,9 @@ own_file /etc/systemd/system/relay-manager-temp-node-fw.service 'managed tempora
 own_file /etc/systemd/system/relay-manager-temp-node-fw.timer 'managed temporary access timer'
 state_add_owned_service relay-manager-temp-node-fw.service
 state_add_owned_service relay-manager-temp-node-fw.timer
+own_file /etc/systemd/system/relay-manager-temp-drift.timer 'managed temporary access timer before drift'
+state_add_owned_service relay-manager-temp-drift.timer
+printf 'external drift\n' >"$(rm_path /etc/systemd/system/relay-manager-temp-drift.timer)"
 
 orphan_rule=$(fw_rule_args_json allow any 4444 'relay-manager:orphan:temporary:9999999999')
 state_update_filter '.temporary_opens += [{
@@ -115,6 +118,8 @@ done
   fail 'owned temporary access service unit was not removed'
 [[ ! -e "$(rm_path /etc/systemd/system/relay-manager-temp-node-fw.timer)" ]] ||
   fail 'owned temporary access timer unit was not removed'
+[[ -f "$(rm_path /etc/systemd/system/relay-manager-temp-drift.timer)" ]] ||
+  fail 'drifted temporary access timer unit was deleted'
 [[ ! -e $RM_XRAY_CONFIG ]] || fail 'owned Xray config was not removed'
 
 [[ -f $RM_SSH_DROPIN ]] || fail 'SSH security policy was removed'
@@ -132,15 +137,20 @@ grep -Fq 'disable --now relay-manager-temp-node-fw.timer' "$RM_SYSTEMCTL_LOG" ||
   fail 'owned temporary access timer was not disabled during uninstall'
 grep -Fq 'stop relay-manager-temp-node-fw.service' "$RM_SYSTEMCTL_LOG" ||
   fail 'owned temporary access service was not stopped during uninstall'
+if grep -Fq 'disable --now relay-manager-temp-drift.timer' "$RM_SYSTEMCTL_LOG"; then
+  fail 'drifted temporary access timer was disabled despite ownership mismatch'
+fi
 grep -Fq 'disable relay-manager-temp-orphan.timer' "$RM_SYSTEMCTL_LOG" ||
   fail 'orphan temporary access timer was not disabled during uninstall'
 grep -Fq -- '--force delete allow to any port 4444 proto tcp comment relay-manager:orphan:temporary:9999999999' "$RM_UFW_LOG" ||
   fail 'orphan temporary public allow was not removed during uninstall'
 
-jq -e --arg foreign_manager "$foreign_version" --arg foreign_core "$foreign_core" '
+drift_temp="$(rm_path /etc/systemd/system/relay-manager-temp-drift.timer)"
+jq -e --arg foreign_manager "$foreign_version" --arg foreign_core "$foreign_core" --arg drift_temp "$drift_temp" '
   (.preserved_paths|index($foreign_manager))!=null and
-  (.preserved_paths|index($foreign_core))!=null
-' <<<"$result" >/dev/null || fail 'unproven version paths were not reported as preserved'
+  (.preserved_paths|index($foreign_core))!=null and
+  (.preserved_paths|index($drift_temp))!=null
+' <<<"$result" >/dev/null || fail 'unproven or drifted paths were not reported as preserved'
 
 remove_exports_only
 [[ ! -e $RM_EXPORT_DIR ]] || fail 'explicit export removal left the export directory'
