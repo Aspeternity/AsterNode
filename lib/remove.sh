@@ -355,6 +355,10 @@ remove_all_nodes_and_manager() {
   while IFS= read -r nid; do
     [[ -n $nid ]] || continue
     fw_expire_temp "$nid" || return $?
+  done < <(jq -r '.temporary_opens[]?.node_id' "$RM_STATE_FILE")
+
+  while IFS= read -r nid; do
+    [[ -n $nid ]] || continue
     fw_remove_node_rules "$nid" || return $?
   done < <(jq -r '.nodes[].node_id' "$RM_STATE_FILE")
 
