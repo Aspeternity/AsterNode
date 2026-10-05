@@ -280,6 +280,17 @@ ssh_rollback_pending
 assert_json "$(cat "$RM_SSH_POLICY")" '.ports==[22,2222]'
 
 # Full success path: apply and confirm with only the retained port listening.
+# Seed the old SSH allow as AsterNode-owned so confirm must exercise the
+# real firewall-release path and its human UFW output redirection.
+old_fw_args=$(fw_rule_args_json allow any 22 'relay-manager:ssh:22')
+fw_store_rule "$(jq -n --argjson a "$old_fw_args" '{
+  comment:"relay-manager:ssh:22",
+  port:22,
+  kind:"ssh-allow",
+  source:"any",
+  args:$a
+}')"
+
 export RM_SSH_TEST_PORTS=2222
 remove_pending=$(ssh_begin_remove_old_port 2222)
 remove_tx=$(jq -r .transaction_id <<<"$remove_pending")
