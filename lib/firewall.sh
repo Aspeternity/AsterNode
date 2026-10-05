@@ -475,11 +475,13 @@ fw_release_ssh_port() {
   entry=$(jq -c --arg c "$comment" '.owned_firewall_rules[]?|select((.comment//"")==$c)' "$RM_STATE_FILE" | head -n1)
   if [[ -n $entry ]]; then
     rule=$(jq -c .args <<<"$entry")
+    fw_exec_rule_json "$rule" delete >&2 || return "$RM_RC_RECOVERY_INCOMPLETE"
   else
+    # Crash fallback: the live UFW rule may exist even though state.json was
+    # never updated. Only reconstruct/delete when the deterministic marker is
+    # actually present; otherwise there is nothing to clean up.
     fw_marker_present "$comment" || return 0
     rule=$(fw_rule_args_json allow any "$port" "$comment")
-  fi
-  if fw_marker_present "$comment"; then
     fw_exec_rule_json "$rule" delete >&2 || return "$RM_RC_RECOVERY_INCOMPLETE"
   fi
   fw_remove_owned_rule_from_state "$comment"
