@@ -628,6 +628,31 @@ case_mid_apply_ssh_recovery() (
   assert_eq ROLLED_BACK "$(jq -r .status "$rolling_file")" 'second recovery changed terminal rollback state'
   assert_eq "$first_hash" "$(rm_sha256_file "$RM_SSH_POLICY")" 'second recovery was not idempotent for SSH policy'
   assert_eq "$second_hash" "$(rm_sha256_file "$RM_SSH_DROPIN")" 'second recovery was not idempotent for SSH drop-in'
+
+  # If rollback cannot safely restore a file because it drifted after apply,
+  # recovery must preserve the migration firewall entry and avoid restarting
+  # SSH with a mixed configuration.
+  prepare_mid_apply_ssh_tx 1 recovery-incomplete
+  incomplete_tx=$RM_TEST_CRASH_TX
+  incomplete_file=$(tx_file "$incomplete_tx")
+  tx_update "$incomplete_tx" '.ssh.firewall_added_ports=[2222]'
+  printf 'third-party-change\n' >"$RM_SSH_POLICY"
+  export RM_UFW_LOG="$crash_root/ufw.log"
+  : >"$RM_UFW_LOG"
+  : >"$RM_SYSTEMCTL_LOG"
+
+  set +e
+  ssh_rollback_pending
+  rc=$?
+  set -e
+  assert_eq 21 "$rc" 'incomplete SSH rollback did not propagate recovery-incomplete status'
+  assert_eq NEEDS_RECOVERY "$(jq -r .status "$incomplete_file")" 'drifted SSH rollback did not remain manual-recovery state'
+  if grep -Fq -- '--force delete' "$RM_UFW_LOG"; then
+    fail 'incomplete SSH rollback removed the migration firewall entry'
+  fi
+  if grep -Eq '(^| )restart (ssh|sshd)(\.service)?($| )' "$RM_SYSTEMCTL_LOG"; then
+    fail 'incomplete SSH rollback restarted SSH with unresolved file drift'
+  fi
 )
 
 case_mid_apply_ssh_recovery
