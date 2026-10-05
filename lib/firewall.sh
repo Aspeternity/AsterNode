@@ -465,7 +465,7 @@ fw_release_ssh_port() {
   comment="relay-manager:ssh:$port"
   entry=$(jq -c --arg c "$comment" '.owned_firewall_rules[]?|select((.comment//"")==$c)' "$RM_STATE_FILE" | head -n1)
   [[ -n $entry ]] || return 0
-  fw_exec_rule_json "$(jq -c .args <<<"$entry")" delete || return "$RM_RC_RECOVERY_INCOMPLETE"
+  fw_exec_rule_json "$(jq -c .args <<<"$entry")" delete >&2 || return "$RM_RC_RECOVERY_INCOMPLETE"
   fw_remove_owned_rule_from_state "$comment"
 }
 
