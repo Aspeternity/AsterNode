@@ -740,6 +740,15 @@ ssh_recovery_guide_json() {
       boundary:"AsterNode 只能恢复其管理的本机配置，不能承诺修复云安全组、供应商网络故障或损坏的系统。"}'
 }
 
+ssh_rollback_change_or_preserve() {
+  local tx=$1 reason=$2 restore_services=${3:-true} rc=0
+  tx_rollback "$tx" "$reason" "$restore_services" || {
+    rc=$?
+    rm_error 'SSH 自动回滚未能安全完成；已保留迁移防火墙入口和保护现场，请按 recovery-guide 人工处理。'
+    return "$rc"
+  }
+}
+
 ssh_apply_policy_protected() {
   local policy=$1 change=$2 target_user=${3:-root} deadline=${4:-$(( $(rm_epoch)+300 ))}
   local firewall_add_port=${5:-} firewall_remove_after_confirm=${6:-'[]'}
@@ -818,7 +827,11 @@ ssh_apply_policy_protected() {
   if [[ -n $firewall_add_port ]]; then
     rm_capture_output fw_result fw_ensure_ssh_port "$firewall_add_port" "$tx" || {
       rc=$?
-      tx_rollback "$tx" 'SSH firewall pre-open failed' || true
+      ssh_rollback_change_or_preserve "$tx" 'SSH firewall pre-open failed' || {
+        rc=$?
+        rm -rf "$tmpdir"
+        return "$rc"
+      }
       ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
       ssh_protection_disable
       rm -rf "$tmpdir"
@@ -828,7 +841,11 @@ ssh_apply_policy_protected() {
 
   tx_apply "$tx" || {
     rc=$?
-    tx_rollback "$tx" 'SSH apply failed' || true
+    ssh_rollback_change_or_preserve "$tx" 'SSH apply failed' || {
+      rc=$?
+      rm -rf "$tmpdir"
+      return "$rc"
+    }
     ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
     ssh_protection_disable
     rm -rf "$tmpdir"
@@ -837,8 +854,16 @@ ssh_apply_policy_protected() {
 
   if ! ssh_main_config_test || ! ssh_restart_mode "$mode"; then
     rc=$RM_RC_APPLY_ROLLED_BACK
-    tx_rollback "$tx" 'SSHD syntax/restart failed' || rc=$?
-    ssh_restart_mode "$mode" || true
+    ssh_rollback_change_or_preserve "$tx" 'SSHD syntax/restart failed' || {
+      rc=$?
+      rm -rf "$tmpdir"
+      return "$rc"
+    }
+    ssh_restart_mode "$mode" || {
+      rm_error 'SSH 配置文件已回滚，但服务恢复重启失败；已保留迁移防火墙入口和保护现场。'
+      rm -rf "$tmpdir"
+      return "$RM_RC_RECOVERY_INCOMPLETE"
+    }
     ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
     ssh_protection_disable
     rm -rf "$tmpdir"
@@ -850,8 +875,16 @@ ssh_apply_policy_protected() {
     expected_families=$(jq -c '.listen_families|map(select(.=="ipv4" or .=="ipv6"))|unique|sort' "$policy")
     if ! ssh_assert_runtime_listener_exact "$target_user" "$expected_ports" "$expected_families"; then
       rc=$RM_RC_APPLY_ROLLED_BACK
-      tx_rollback "$tx" 'SSH 监听端口或地址族未收敛到目标策略' || rc=$?
-      ssh_restart_mode "$mode" || true
+      ssh_rollback_change_or_preserve "$tx" 'SSH 监听端口或地址族未收敛到目标策略' || {
+        rc=$?
+        rm -rf "$tmpdir"
+        return "$rc"
+      }
+      ssh_restart_mode "$mode" || {
+        rm_error 'SSH 监听校验失败后文件已回滚，但服务恢复重启失败；已保留迁移防火墙入口和保护现场。'
+        rm -rf "$tmpdir"
+        return "$RM_RC_RECOVERY_INCOMPLETE"
+      }
       ssh_cleanup_firewall_added_from_tx "$tx" || rc=$RM_RC_RECOVERY_INCOMPLETE
       ssh_protection_disable
       rm -rf "$tmpdir"
@@ -1049,11 +1082,7 @@ ssh_rollback_pending() {
   # Never tear down the migration firewall/protection while the file
   # transaction is unresolved. A partial rollback plus firewall cleanup could
   # make the only still-listening SSH port unreachable.
-  tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' "$restore_services" || {
-    rc=$?
-    rm_error 'SSH 自动回滚未能安全完成；已保留迁移防火墙入口和保护现场，请按 recovery-guide 人工处理。'
-    return "$rc"
-  }
+  ssh_rollback_change_or_preserve "$tx" 'SSH 验证未确认或保护计时到期' "$restore_services" || return $?
 
   if [[ $context == --boot-guard ]]; then
     rm_systemctl daemon-reload || {
