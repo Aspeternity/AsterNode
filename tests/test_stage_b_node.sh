@@ -179,7 +179,30 @@ after_key=$(jq -r '.nodes[]|select(.node_id=="node-stageb")|.reality.password' "
 assert_ne "$before_key" "$after_key" 'REALITY key rotation did not change public credential'
 assert_json "$rotation" '.status=="rotated" and .exports_invalidated==true and .server_private_key_exposed==false'
 
+# Disabling the last enabled node must stop Xray and also remove boot
+# autostart. Re-enabling an autostart node must restore enable + restart.
+: >"$RM_SYSTEMCTL_LOG"
+node_set_enabled node-stageb false
+grep -Fq 'disable relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 'disabling the last enabled node did not disable Xray autostart'
+grep -Fq 'stop relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 'disabling the last enabled node did not stop Xray'
+assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds|length)==0'
+
+: >"$RM_SYSTEMCTL_LOG"
+node_set_enabled node-stageb true
+grep -Fq 'enable relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 're-enabling an autostart node did not restore Xray autostart'
+grep -Fq 'restart relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 're-enabling an autostart node did not restart Xray'
+
+# Deleting the final node has the same zero-enabled-node lifecycle.
+: >"$RM_SYSTEMCTL_LOG"
 node_delete node-stageb
+grep -Fq 'disable relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 'deleting the last node did not disable Xray autostart'
+grep -Fq 'stop relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 'deleting the last node did not stop Xray'
 assert_json "$(cat "$RM_STATE_FILE")" '(.nodes|length)==0 and (.upstreams|length)==0 and (.sources|length)==0'
 assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds|length)==0'
 
