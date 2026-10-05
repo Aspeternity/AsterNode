@@ -133,6 +133,25 @@ if grep -Fq 'Rule added' <<<"$ensure_json"; then
 fi
 fw_release_ssh_port 61235 >/dev/null 2>&1
 
+# The SSH migration transaction must persist firewall rollback intent before
+# the live UFW add. This lets deadline recovery clean up after a SIGKILL at
+# any point between the rule write and ownership-state persistence.
+tx=''
+rm_capture_output tx tx_begin ssh-firewall-intent
+intent_json=''
+rm_capture_output intent_json fw_ensure_ssh_port 61236 "$tx"
+assert_json "$intent_json" '.status=="added" and .port==61236 and .added==true'
+assert_json "$(cat "$(tx_file "$tx")")" '.status=="PREPARED" and .ssh.firewall_added_ports==[61236]'
+
+# Simulate a crash after UFW contains the rule but before state.json contains
+# its ownership record. Cleanup must reconstruct the deterministic rule.
+state_update_filter '.owned_firewall_rules=[.owned_firewall_rules[]|select((.comment//"")!="relay-manager:ssh:61236")]'
+: >"$RM_UFW_LOG"
+fw_release_ssh_port 61236
+grep -Fq -- '--force delete allow to any port 61236 proto tcp comment relay-manager:ssh:61236' "$RM_UFW_LOG" ||
+  fail 'SSH firewall cleanup could not recover a rule missing from state ownership'
+tx_rollback "$tx" firewall-intent-test
+
 state_update_filter '.nodes=[{
   node_id:"node-fw",name:"fw",listen_address:"::",listen_port:443,
   enabled:true,autostart:true,access_mode:"whitelist"
