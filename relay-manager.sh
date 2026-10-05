@@ -194,7 +194,7 @@ ssh_cmd() {
     root-publickey-only) mutation_guard; ssh_begin_root_policy publickey-only root;;
     root-disable) mutation_guard; ssh_begin_root_policy disable "$1";;
     confirm) mutation_access_guard || return $?; ssh_confirm_pending "${1:-}";;
-    rollback-pending) rm_require_root; ssh_rollback_pending;;
+    rollback-pending) rm_require_root; ssh_rollback_pending "${1:-normal}";;
     recovery-guide) ssh_recovery_guide_json "${1:-}";;
     *) return "$RM_RC_PRECONDITION";;
   esac
