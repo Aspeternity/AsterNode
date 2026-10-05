@@ -1049,11 +1049,11 @@ ssh_rollback_pending() {
   # Never tear down the migration firewall/protection while the file
   # transaction is unresolved. A partial rollback plus firewall cleanup could
   # make the only still-listening SSH port unreachable.
-  if ! tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' "$restore_services"; then
+  tx_rollback "$tx" 'SSH 验证未确认或保护计时到期' "$restore_services" || {
     rc=$?
     rm_error 'SSH 自动回滚未能安全完成；已保留迁移防火墙入口和保护现场，请按 recovery-guide 人工处理。'
     return "$rc"
-  fi
+  }
 
   if [[ $context == --boot-guard ]]; then
     rm_systemctl daemon-reload || {
