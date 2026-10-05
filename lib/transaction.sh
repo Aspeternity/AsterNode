@@ -310,7 +310,8 @@ _tx_restore_services() {
 }
 
 tx_rollback() {
-  local id=$1 reason=${2:-'requested rollback'} f status count i dest existed snap old_sha staged_sha applied current_sha mode uid gid conflict=false tmp
+  local id=$1 reason=${2:-'requested rollback'} restore_services=${3:-true} f status count i dest existed snap old_sha staged_sha applied current_sha mode uid gid conflict=false tmp
+  [[ $restore_services == true || $restore_services == false ]] || return "$RM_RC_PRECONDITION"
   tx_lock_acquire || return $?
   f=$(tx_file "$id"); [[ -f $f ]] || { tx_lock_release; return "$RM_RC_PRECONDITION"; }
   status=$(jq -r '.status' "$f")
@@ -360,7 +361,7 @@ tx_rollback() {
   done
 
   f=$(tx_file "$id")
-  if ! _tx_restore_services "$f"; then
+  if [[ $restore_services == true ]] && ! _tx_restore_services "$f"; then
     rm_warn '服务状态未能完整恢复。'
     conflict=true
   fi
