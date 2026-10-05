@@ -324,8 +324,8 @@ case_socket_mode_and_boot_guard() (
   export RM_ROOT="$socket_root" RM_TEST_MODE=1
   export RM_SYSTEMCTL_LOG="$socket_root/systemctl.log"
   export RM_SSH_TEST_MODE=socket
-  export RM_SSH_TEST_SOCKET_LISTEN=
-0.0.0.0:22 (Stream)\n[::]:22 (Stream)'
+  export RM_SSH_TEST_SOCKET_LISTEN="0.0.0.0:22 (Stream)
+[::]:22 (Stream)"
   unset RM_SSH_TEST_PORTS
 
   mkdir -p "$socket_root/etc/ssh/sshd_config.d" "$socket_root/fakebin"
