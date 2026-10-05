@@ -37,6 +37,10 @@ own_file /etc/systemd/system/relay-manager-ssh-rollback.service 'managed ssh rol
 own_file /etc/systemd/system/relay-manager-ssh-rollback.timer 'managed ssh rollback timer'
 own_file /etc/systemd/system/relay-manager-ssh-boot-guard.service 'managed ssh boot guard'
 own_file /etc/systemd/system/ssh.service.d/relay-manager-guard.conf 'managed ssh guard'
+own_file /etc/systemd/system/relay-manager-temp-node-fw.service 'managed temporary access service'
+own_file /etc/systemd/system/relay-manager-temp-node-fw.timer 'managed temporary access timer'
+state_add_owned_service relay-manager-temp-node-fw.service
+state_add_owned_service relay-manager-temp-node-fw.timer
 
 own_file /etc/ssh/sshd_config.d/00-relay-manager.conf 'PasswordAuthentication no'
 own_file /etc/fail2ban/jail.d/relay-manager-sshd.local '[relay-manager-sshd]'
@@ -97,6 +101,10 @@ backup_verify "$recovery"
 for path in   "$RM_XRAY_SERVICE_FILE" "$RM_MAINT_SERVICE_FILE" "$RM_MAINT_TIMER_FILE" "$RM_FW_GUARD_SERVICE_FILE"   "$RM_SSH_PROTECT_SERVICE" "$RM_SSH_PROTECT_TIMER" "$RM_SSH_BOOT_GUARD_SERVICE" "$RM_SSH_SERVICE_GUARD_DROPIN"; do
   [[ ! -e $path && ! -L $path ]] || fail "managed runtime helper was not removed: $path"
 done
+[[ ! -e "$(rm_path /etc/systemd/system/relay-manager-temp-node-fw.service)" ]] ||
+  fail 'owned temporary access service unit was not removed'
+[[ ! -e "$(rm_path /etc/systemd/system/relay-manager-temp-node-fw.timer)" ]] ||
+  fail 'owned temporary access timer unit was not removed'
 [[ ! -e $RM_XRAY_CONFIG ]] || fail 'owned Xray config was not removed'
 
 [[ -f $RM_SSH_DROPIN ]] || fail 'SSH security policy was removed'
@@ -110,6 +118,10 @@ done
 grep -Fq 'disable --now relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" || fail 'managed Xray service was not disabled'
 grep -Fq 'disable --now relay-manager-maintenance.timer' "$RM_SYSTEMCTL_LOG" || fail 'maintenance timer was not disabled'
 grep -Fq 'disable --now relay-manager-ssh-rollback.timer' "$RM_SYSTEMCTL_LOG" || fail 'SSH rollback timer was not disabled'
+grep -Fq 'disable --now relay-manager-temp-node-fw.timer' "$RM_SYSTEMCTL_LOG" ||
+  fail 'owned temporary access timer was not disabled during uninstall'
+grep -Fq 'stop relay-manager-temp-node-fw.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 'owned temporary access service was not stopped during uninstall'
 
 jq -e --arg foreign_manager "$foreign_version" --arg foreign_core "$foreign_core" '
   (.preserved_paths|index($foreign_manager))!=null and
@@ -121,4 +133,4 @@ remove_exports_only
 remove_backups_only
 [[ ! -e $RM_BACKUP_DIR ]] || fail 'explicit backup removal left the backup directory'
 
-pass 'Stage D removal is ownership-scoped, recovery-backed and preserves system security by default'
+pass 'Stage D removal is ownership-scoped, removes owned temporary units, recovery-backed and preserves system security by default'
