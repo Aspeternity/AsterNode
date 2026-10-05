@@ -316,4 +316,116 @@ grep -Fq 'PermitRootLogin prohibit-password' "$root/etc/ssh/sshd_config.d/00-rel
   fail 'root publickey-only policy not rendered'
 ssh_rollback_pending
 
+case_socket_mode_and_boot_guard() (
+  set -Eeuo pipefail
+  socket_root=$(new_test_root)
+  trap 'rm -rf "$socket_root"' EXIT
+
+  export RM_ROOT="$socket_root" RM_TEST_MODE=1
+  export RM_SYSTEMCTL_LOG="$socket_root/systemctl.log"
+  export RM_SSH_TEST_MODE=socket
+  export RM_SSH_TEST_SOCKET_LISTEN=
+0.0.0.0:22 (Stream)\n[::]:22 (Stream)'
+  unset RM_SSH_TEST_PORTS
+
+  mkdir -p "$socket_root/etc/ssh/sshd_config.d" "$socket_root/fakebin"
+  cat >"$socket_root/etc/ssh/sshd_config" <<'EOF'
+Include /etc/ssh/sshd_config.d/*.conf
+Port 22
+EOF
+  export RM_SSH_EFFECTIVE_FILE="$socket_root/sshd-effective.txt"
+  cat >"$RM_SSH_EFFECTIVE_FILE" <<'EOF'
+port 22
+pubkeyauthentication yes
+passwordauthentication yes
+kbdinteractiveauthentication yes
+permitrootlogin yes
+authenticationmethods any
+authorizedkeysfile .ssh/authorized_keys
+authorizedkeyscommand none
+authorizedprincipalscommand none
+trustedusercakeys none
+usepam yes
+EOF
+
+  cat >"$socket_root/fakebin/sshd" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+  -T)
+    cat "${RM_SSH_EFFECTIVE_FILE:?}"
+    managed="${RM_ROOT:?}/etc/ssh/sshd_config.d/00-relay-manager.conf"
+    if [[ -f $managed ]]; then
+      awk 'tolower($1)=="listenaddress"{print "listenaddress "$2}' "$managed"
+    fi
+    ;;
+  -t) exit 0 ;;
+  *) exit 10 ;;
+esac
+EOF
+  chmod 0755 "$socket_root/fakebin/sshd"
+  export PATH="$socket_root/fakebin:$PATH"
+
+  source "$PROJECT_DIR/lib/ssh.sh"
+  state_init
+  : >"$RM_SYSTEMCTL_LOG"
+
+  status=$(ssh_detect_json root 127.0.0.1)
+  assert_json "$status" '
+    .start_mode=="socket" and
+    .effective.ports==[22] and
+    .actual_listen_ports==[22]
+  '
+  assert_json "$(ssh_listen_families_json)" 'sort==["ipv4","ipv6"]'
+
+  migration=$(ssh_begin_port_migration 2222)
+  tx=$(jq -r .transaction_id <<<"$migration")
+  assert_json "$migration" '
+    .status=="pending_manual_verification" and
+    .change=="port-migration" and
+    (.transaction_id|length)>0
+  '
+  [[ -f "$RM_SSH_SOCKET_DROPIN" ]] || fail 'socket migration did not create ssh.socket override'
+  grep -Fxq 'ListenStream=' "$RM_SSH_SOCKET_DROPIN" ||
+    fail 'socket override did not reset inherited listeners'
+  grep -Fxq 'ListenStream=22' "$RM_SSH_SOCKET_DROPIN" ||
+    fail 'socket override did not preserve old port during migration'
+  grep -Fxq 'ListenStream=2222' "$RM_SSH_SOCKET_DROPIN" ||
+    fail 'socket override did not add new port'
+  grep -Fq 'restart socket' "$RM_SYSTEMCTL_LOG" ||
+    fail 'socket migration did not restart ssh.socket mode'
+  grep -Fq 'ExecStart=/usr/local/bin/relay-manager ssh rollback-pending --boot-guard'     "$RM_SSH_BOOT_GUARD_SERVICE" ||
+    fail 'boot guard was not wired to boot-guard rollback context'
+  if grep -Fq -- '--boot-guard' "$RM_SSH_PROTECT_SERVICE"; then
+    fail 'deadline rollback service was incorrectly switched to boot-guard mode'
+  fi
+  assert_json "$(ssh_runtime_ports_json root)" '.effective==[22,2222] and .actual==[22,2222]'
+
+  : >"$RM_SYSTEMCTL_LOG"
+  ssh_rollback_pending --boot-guard
+  assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$tx")")"
+  [[ ! -e "$RM_SSH_SOCKET_DROPIN" ]] ||
+    fail 'boot guard rollback did not restore the pre-migration socket configuration'
+  grep -Fxq 'daemon-reload' "$RM_SYSTEMCTL_LOG" ||
+    fail 'boot guard rollback did not daemon-reload restored systemd configuration'
+  if grep -Eq '(^| )restart (socket|ssh\.socket)($| )' "$RM_SYSTEMCTL_LOG"; then
+    fail 'boot guard synchronously restarted SSH and can deadlock boot ordering'
+  fi
+  if grep -Eq '(^| )(enable|disable|start|stop) ssh\.socket($| )' "$RM_SYSTEMCTL_LOG"; then
+    fail 'boot guard transaction rollback restored ssh.socket service state inside the guard'
+  fi
+  assert_json "$(ssh_runtime_ports_json root)" '.effective==[22] and .actual==[22]'
+
+  # Ordinary/manual rollback keeps the existing behavior and explicitly
+  # restarts the currently selected SSH mode after restoring files.
+  : >"$RM_SYSTEMCTL_LOG"
+  migration2=$(ssh_begin_port_migration 2222)
+  ssh_rollback_pending
+  grep -Fq 'restart socket' "$RM_SYSTEMCTL_LOG" ||
+    fail 'ordinary socket rollback stopped restarting the active SSH mode'
+  assert_json "$(ssh_runtime_ports_json root)" '.effective==[22] and .actual==[22]'
+)
+
+case_socket_mode_and_boot_guard
+
 pass 'Stage C SSH detection, key safety, exact listener ownership, protected migration and reboot guard'
