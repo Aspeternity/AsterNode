@@ -271,6 +271,38 @@ set -e
 assert_eq 10 "$rc" 'modified UFW framework files did not disable automation'
 export RM_UFW_FRAMEWORK_MODIFIED=false
 
+# Temporary public access is only allowed when a durable periodic
+# reconciler is guaranteed to exist. Missing/disabled/inactive must fail
+# before lock creation, transaction creation, state mutation, systemd calls
+# or UFW writes.
+temp_state_sha=$(rm_sha256_file "$RM_STATE_FILE")
+temp_tx_count_before=$(find "$RM_TX_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+
+for maint_state in missing disabled inactive; do
+  export RM_UFW_TEST_MAINT_TIMER_STATE="$maint_state"
+  : >"$RM_UFW_LOG"
+  : >"$RM_SYSTEMCTL_LOG"
+
+  set +e
+  fw_temp_open node-fw 10 >/dev/null 2>&1
+  rc=$?
+  set -e
+
+  assert_eq 10 "$rc" "temporary access did not fail closed when maintenance timer was $maint_state"
+  assert_eq "$temp_state_sha" "$(rm_sha256_file "$RM_STATE_FILE")"     "maintenance timer precondition changed state for $maint_state"
+
+  temp_tx_count_after=$(find "$RM_TX_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  assert_eq "$temp_tx_count_before" "$temp_tx_count_after"     "maintenance timer precondition created a transaction for $maint_state"
+
+  [[ ! -s $RM_UFW_LOG ]] ||
+    fail "maintenance timer precondition wrote UFW rules for $maint_state"
+  [[ ! -s $RM_SYSTEMCTL_LOG ]] ||
+    fail "maintenance timer precondition invoked systemd for $maint_state"
+  [[ ! -e "$root/run/relay-manager/firewall-temp.lock" ]] ||
+    fail "maintenance timer precondition created the temporary firewall lock for $maint_state"
+done
+
+export RM_UFW_TEST_MAINT_TIMER_STATE=ready
 : >"$RM_UFW_LOG"
 : >"$RM_SYSTEMCTL_LOG"
 unset RM_UFW_TEST_MARKER_STATE
