@@ -148,19 +148,24 @@ ssh_effective_ports_json() {
 }
 
 ssh_runtime_ports_json() {
-  local user=${1:-root} eff effective actual
+  local user=${1:-root} eff effective actual families
   eff=$(ssh_effective_text "$user" 127.0.0.1 localhost) || return "$RM_RC_PRECONDITION"
   effective=$(ssh_effective_ports_json "$eff")
   actual=$(ssh_listen_ports | jq -R -s 'split("\n")|map(select(length>0)|tonumber)|unique|sort')
-  jq -n --argjson effective "$effective" --argjson actual "$actual" '{effective:$effective,actual:$actual}'
+  families=$(ssh_listen_families_json)
+  jq -n --argjson effective "$effective" --argjson actual "$actual" --argjson families "$families" \
+    '{effective:$effective,actual:$actual,actual_families:$families}'
 }
 
-ssh_assert_runtime_ports_exact() {
-  local user=$1 expected=$2 runtime normalized
-  normalized=$(jq -c 'map(tonumber)|unique|sort' <<<"$expected")
+ssh_assert_runtime_listener_exact() {
+  local user=$1 expected_ports=$2 expected_families=$3 runtime ports families
+  ports=$(jq -c 'map(tonumber)|unique|sort' <<<"$expected_ports")
+  families=$(jq -c 'map(select(.=="ipv4" or .=="ipv6"))|unique|sort' <<<"$expected_families")
+  [[ $(jq 'length' <<<"$families") -gt 0 ]] || return "$RM_RC_PRECONDITION"
   runtime=$(ssh_runtime_ports_json "$user") || return $?
-  jq -e --argjson expected "$normalized" '.effective==$expected and .actual==$expected' <<<"$runtime" >/dev/null && return 0
-  rm_error "SSH 监听集合与目标策略不一致: expected=$normalized runtime=$(jq -c . <<<"$runtime")"
+  jq -e --argjson ports "$ports" --argjson families "$families" \
+    '.effective==$ports and .actual==$ports and .actual_families==$families' <<<"$runtime" >/dev/null && return 0
+  rm_error "SSH 监听集合与目标策略不一致: expected_ports=$ports expected_families=$families runtime=$(jq -c . <<<"$runtime")"
   return "$RM_RC_PRECONDITION"
 }
 
@@ -598,7 +603,13 @@ ssh_policy_render_dropin() {
 
 ssh_socket_render_override() {
   local policy=$1 out=$2
-  { printf '[Socket]\nListenStream=\n'; jq -r '.ports[]? | "ListenStream=\(.)"' "$policy"; } >"$out"
+  {
+    printf '[Socket]\nListenStream=\n'
+    jq -r '. as $root | $root.ports[] as $p | $root.listen_families[] |
+      if .=="ipv4" then "ListenStream=0.0.0.0:\($p)"
+      elif .=="ipv6" then "ListenStream=[::]:\($p)"
+      else empty end' "$policy"
+  } >"$out"
 }
 
 ssh_protection_setup() {
@@ -714,7 +725,7 @@ ssh_recovery_guide_json() {
 }
 
 ssh_apply_policy_protected() {
-  local policy=$1 change=$2 target_user=${3:-root} deadline=${4:-$(( $(rm_epoch)+300 ))} mode tmpdir drop socket tx rc service_unit expected_ports
+  local policy=$1 change=$2 target_user=${3:-root} deadline=${4:-$(( $(rm_epoch)+300 ))} mode tmpdir drop socket tx rc service_unit expected_ports expected_families
   rm_require_root || return $?
   if [[ ${RM_TEST_MODE} != 1 ]]; then rm_tty_available || { rm_error 'SSH 安全修改要求交互 TTY。'; return "$RM_RC_PRECONDITION"; }; fi
   ssh_main_config_test || { rm_error '现有 sshd 配置本身未通过语法检查，拒绝开始迁移。'; return "$RM_RC_PRECONDITION"; }
@@ -723,7 +734,9 @@ ssh_apply_policy_protected() {
   tmpdir=$(rm_safe_tmpdir); drop="$tmpdir/ssh.conf"; socket="$tmpdir/socket.conf"
   ssh_policy_render_dropin "$policy" "$drop"; ssh_socket_render_override "$policy" "$socket"
   tx=$(tx_begin "ssh-change:$change" "$deadline") || { ssh_protection_disable; rm -rf "$tmpdir"; return $?; }
-  tx_update "$tx" '.ssh={change:$change,ports:$ports,target_user:$user}' --arg change "$change" --argjson ports "$(jq '.ports' "$policy")" --arg user "$target_user"
+  tx_update "$tx" '.ssh={change:$change,ports:$ports,listen_families:$families,target_user:$user}' \
+    --arg change "$change" --argjson ports "$(jq '.ports' "$policy")" \
+    --argjson families "$(jq '.listen_families' "$policy")" --arg user "$target_user"
   case "$mode" in socket) service_unit=ssh.socket;; service:ssh) service_unit=ssh.service;; service:sshd) service_unit=sshd.service;; esac
   tx_record_service "$tx" "$service_unit" true || true
   tx_stage_file "$tx" "$policy" "$RM_SSH_POLICY" 0600 root:root || { tx_rollback "$tx" 'policy stage failed' || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$RM_RC_PRECONDITION"; }
@@ -733,9 +746,10 @@ ssh_apply_policy_protected() {
   if ! ssh_main_config_test || ! ssh_restart_mode "$mode"; then rc=$RM_RC_APPLY_ROLLED_BACK; tx_rollback "$tx" 'SSHD syntax/restart failed' || rc=$?; ssh_restart_mode "$mode" || true; ssh_protection_disable; rm -rf "$tmpdir"; return "$rc"; fi
   if [[ $change == port-migration || $change == remove-old-port ]]; then
     expected_ports=$(jq -c '.ports|map(tonumber)|unique|sort' "$policy")
-    if ! ssh_assert_runtime_ports_exact "$target_user" "$expected_ports"; then
+    expected_families=$(jq -c '.listen_families|map(select(.=="ipv4" or .=="ipv6"))|unique|sort' "$policy")
+    if ! ssh_assert_runtime_listener_exact "$target_user" "$expected_ports" "$expected_families"; then
       rc=$RM_RC_APPLY_ROLLED_BACK
-      tx_rollback "$tx" 'SSH 监听集合未收敛到目标策略' || rc=$?
+      tx_rollback "$tx" 'SSH 监听端口或地址族未收敛到目标策略' || rc=$?
       ssh_restart_mode "$mode" || true
       ssh_protection_disable
       rm -rf "$tmpdir"
@@ -858,14 +872,15 @@ ssh_begin_root_policy() {
 }
 
 ssh_confirm_pending() {
-  local tx=${1:-} f change ans eff ports target_user
+  local tx=${1:-} f change ans eff ports families target_user
   [[ -n $tx ]] || tx=$(ssh_pending_tx_id) || { rm_error '没有待确认 SSH 事务'; return "$RM_RC_PRECONDITION"; }
   f=$(tx_file "$tx"); [[ $(jq -r .status "$f") == APPLIED_PENDING ]] || return "$RM_RC_PRECONDITION"
   change=$(jq -r '.ssh.change' "$f"); target_user=$(jq -r '.ssh.target_user // "root"' "$f")
   ssh_main_config_test || return "$RM_RC_PRECONDITION"
   ports=$(jq -c '.ssh.ports|map(tonumber)|unique|sort' "$f")
+  families=$(jq -c '.ssh.listen_families // [] | map(select(.=="ipv4" or .=="ipv6"))|unique|sort' "$f")
   if [[ $change == port-migration || $change == remove-old-port ]]; then
-    ssh_assert_runtime_ports_exact "$target_user" "$ports" || return "$RM_RC_PRECONDITION"
+    ssh_assert_runtime_listener_exact "$target_user" "$ports" "$families" || return "$RM_RC_PRECONDITION"
   fi
   eff=$(ssh_effective_text "$target_user" 127.0.0.1 localhost || true)
   if [[ $change == disable-password ]]; then grep -q '^passwordauthentication no' <<<"$eff" && grep -q '^kbdinteractiveauthentication no' <<<"$eff" || return "$RM_RC_PRECONDITION"; fi
