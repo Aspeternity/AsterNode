@@ -119,12 +119,7 @@ rc=$?
 set -e
 assert_eq 70 "$rc" 'reconcile swallowed a non-21 transaction recovery error'
 grep -Fxq 'RECONCILE' "$trace" || fail 'reconcile did not invoke transaction reconciliation'
-if grep -Eq '^(UPSTREAM|FIREWALL|PRUNE)
-  fail 'reconcile continued with writes after transaction recovery failed'
-fi
-
-pass 'periodic reconcile preserves valid pending transactions and recovery failures fail closed'
- "$trace"; then
+if grep -Eq '^(UPSTREAM|FIREWALL|PRUNE)$' "$trace"; then
   fail 'reconcile continued with writes after transaction recovery failed'
 fi
 
