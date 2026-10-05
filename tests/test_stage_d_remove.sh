@@ -7,6 +7,8 @@ root=$(new_test_root)
 work=$(mktemp -d)
 trap 'rm -rf "$root" "$work"' EXIT
 export RM_ROOT="$root" RM_TEST_MODE=1 RM_SYSTEMCTL_LOG="$root/systemctl.log"
+export RM_UFW_LOG="$root/ufw.log"
+: >"$RM_UFW_LOG"
 
 mkdir -p "$root/etc"
 printf '0123456789abcdef0123456789abcdef\n' >"$root/etc/machine-id"
@@ -37,6 +39,26 @@ own_file /etc/systemd/system/relay-manager-ssh-rollback.service 'managed ssh rol
 own_file /etc/systemd/system/relay-manager-ssh-rollback.timer 'managed ssh rollback timer'
 own_file /etc/systemd/system/relay-manager-ssh-boot-guard.service 'managed ssh boot guard'
 own_file /etc/systemd/system/ssh.service.d/relay-manager-guard.conf 'managed ssh guard'
+
+own_file /etc/systemd/system/relay-manager-temp-clean.service 'managed temporary access service'
+own_file /etc/systemd/system/relay-manager-temp-clean.timer 'managed temporary access timer'
+state_add_owned_service relay-manager-temp-clean.service
+state_add_owned_service relay-manager-temp-clean.timer
+
+own_file /etc/systemd/system/relay-manager-temp-drift.service 'managed temporary access service'
+own_file /etc/systemd/system/relay-manager-temp-drift.timer 'managed temporary access timer'
+state_add_owned_service relay-manager-temp-drift.service
+state_add_owned_service relay-manager-temp-drift.timer
+printf 'external drift\n' >"$(rm_path /etc/systemd/system/relay-manager-temp-drift.timer)"
+
+orphan_rule=$(fw_rule_args_json allow any 4444 'relay-manager:orphan:temporary:9999999999')
+state_update_filter '.temporary_opens += [{
+  node_id:"orphan",
+  deadline_epoch:9999999999,
+  rule_args:$rule,
+  unit:"relay-manager-temp-orphan",
+  phase:"APPLIED"
+}]' --argjson rule "$orphan_rule"
 
 own_file /etc/ssh/sshd_config.d/00-relay-manager.conf 'PasswordAuthentication no'
 own_file /etc/fail2ban/jail.d/relay-manager-sshd.local '[relay-manager-sshd]'
@@ -97,6 +119,14 @@ backup_verify "$recovery"
 for path in   "$RM_XRAY_SERVICE_FILE" "$RM_MAINT_SERVICE_FILE" "$RM_MAINT_TIMER_FILE" "$RM_FW_GUARD_SERVICE_FILE"   "$RM_SSH_PROTECT_SERVICE" "$RM_SSH_PROTECT_TIMER" "$RM_SSH_BOOT_GUARD_SERVICE" "$RM_SSH_SERVICE_GUARD_DROPIN"; do
   [[ ! -e $path && ! -L $path ]] || fail "managed runtime helper was not removed: $path"
 done
+[[ ! -e "$(rm_path /etc/systemd/system/relay-manager-temp-clean.service)" ]] ||
+  fail 'owned temporary access service unit was not removed'
+[[ ! -e "$(rm_path /etc/systemd/system/relay-manager-temp-clean.timer)" ]] ||
+  fail 'owned temporary access timer unit was not removed'
+[[ -f "$(rm_path /etc/systemd/system/relay-manager-temp-drift.service)" ]] ||
+  fail 'paired drifted temporary access service was deleted'
+[[ -f "$(rm_path /etc/systemd/system/relay-manager-temp-drift.timer)" ]] ||
+  fail 'drifted temporary access timer was deleted'
 [[ ! -e $RM_XRAY_CONFIG ]] || fail 'owned Xray config was not removed'
 
 [[ -f $RM_SSH_DROPIN ]] || fail 'SSH security policy was removed'
@@ -110,15 +140,30 @@ done
 grep -Fq 'disable --now relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" || fail 'managed Xray service was not disabled'
 grep -Fq 'disable --now relay-manager-maintenance.timer' "$RM_SYSTEMCTL_LOG" || fail 'maintenance timer was not disabled'
 grep -Fq 'disable --now relay-manager-ssh-rollback.timer' "$RM_SYSTEMCTL_LOG" || fail 'SSH rollback timer was not disabled'
+grep -Fq 'disable --now relay-manager-temp-clean.timer' "$RM_SYSTEMCTL_LOG" ||
+  fail 'owned temporary access timer was not disabled during uninstall'
+grep -Fq 'stop relay-manager-temp-clean.service' "$RM_SYSTEMCTL_LOG" ||
+  fail 'owned temporary access service was not stopped during uninstall'
+if grep -Fq 'relay-manager-temp-drift' "$RM_SYSTEMCTL_LOG"; then
+  fail 'drifted temporary access unit was controlled despite ownership mismatch'
+fi
+grep -Fq 'disable relay-manager-temp-orphan.timer' "$RM_SYSTEMCTL_LOG" ||
+  fail 'orphan temporary access timer was not disabled during uninstall'
+grep -Fq -- '--force delete allow to any port 4444 proto tcp comment relay-manager:orphan:temporary:9999999999' "$RM_UFW_LOG" ||
+  fail 'orphan temporary public allow was not removed during uninstall'
 
-jq -e --arg foreign_manager "$foreign_version" --arg foreign_core "$foreign_core" '
+drift_service="$(rm_path /etc/systemd/system/relay-manager-temp-drift.service)"
+drift_timer="$(rm_path /etc/systemd/system/relay-manager-temp-drift.timer)"
+jq -e --arg foreign_manager "$foreign_version" --arg foreign_core "$foreign_core"   --arg drift_service "$drift_service" --arg drift_timer "$drift_timer" '
   (.preserved_paths|index($foreign_manager))!=null and
-  (.preserved_paths|index($foreign_core))!=null
-' <<<"$result" >/dev/null || fail 'unproven version paths were not reported as preserved'
+  (.preserved_paths|index($foreign_core))!=null and
+  (.preserved_paths|index($drift_service))!=null and
+  (.preserved_paths|index($drift_timer))!=null
+' <<<"$result" >/dev/null || fail 'unproven or drifted paths were not reported as preserved'
 
 remove_exports_only
 [[ ! -e $RM_EXPORT_DIR ]] || fail 'explicit export removal left the export directory'
 remove_backups_only
 [[ ! -e $RM_BACKUP_DIR ]] || fail 'explicit backup removal left the backup directory'
 
-pass 'Stage D removal is ownership-scoped, recovery-backed and preserves system security by default'
+pass 'Stage D removal is ownership-scoped, removes owned temporary units, cleans orphan temporary access and preserves drifted resources'
