@@ -646,6 +646,39 @@ fw_temp_unit_names() {
   printf 'relay-manager-temp-%s\n' "$safe"
 }
 
+fw_temp_require_durable_reconciler() {
+  local unit='relay-manager-maintenance.timer'
+  local unit_file
+  unit_file=$(rm_path "/etc/systemd/system/$unit")
+
+  if [[ ${RM_TEST_MODE} == 1 ]]; then
+    case "${RM_UFW_TEST_MAINT_TIMER_STATE:-ready}" in
+      ready) return 0 ;;
+      missing|disabled|inactive)
+        rm_error "临时公网开放要求可用的周期恢复器；测试状态=$RM_UFW_TEST_MAINT_TIMER_STATE"
+        return "$RM_RC_PRECONDITION"
+        ;;
+      *)
+        rm_error "未知 maintenance timer 测试状态: $RM_UFW_TEST_MAINT_TIMER_STATE"
+        return "$RM_RC_INTERNAL"
+        ;;
+    esac
+  fi
+
+  [[ -f $unit_file && ! -L $unit_file ]] || {
+    rm_error "临时公网开放要求 AsterNode maintenance timer 存在: $unit"
+    return "$RM_RC_PRECONDITION"
+  }
+  systemctl is-enabled --quiet "$unit" 2>/dev/null || {
+    rm_error "临时公网开放要求 maintenance timer 已启用: $unit"
+    return "$RM_RC_PRECONDITION"
+  }
+  systemctl is-active --quiet "$unit" 2>/dev/null || {
+    rm_error "临时公网开放要求 maintenance timer 正在运行: $unit"
+    return "$RM_RC_PRECONDITION"
+  }
+}
+
 fw_temp_lock_acquire() {
   rm_mkdir_secure 0700 "$RM_RUN_DIR" || return $?
   rm_require_cmds flock || return $?
@@ -714,6 +747,7 @@ fw_temp_open() {
   local nid=$1 minutes=${2:-10} rc=0
   [[ $minutes =~ ^[0-9]+$ ]] && ((minutes>=1 && minutes<=1440)) || return "$RM_RC_PRECONDITION"
   fw_require_manageable || return $?
+  fw_temp_require_durable_reconciler || return $?
   fw_temp_lock_acquire || return $?
   _fw_temp_open_locked "$nid" "$minutes" || rc=$?
   fw_temp_lock_release
