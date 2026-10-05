@@ -23,7 +23,11 @@ mutation_access_guard() {
 mutation_guard() {
   mutation_access_guard || return $?
   [[ ${RM_TEST_MODE} == 1 ]] && return 0
-  tx_recover_pending || { local rc=$?; [[ $rc == $RM_RC_RECOVERY_INCOMPLETE ]] && return "$rc"; }
+  tx_recover_pending || {
+    local rc=$?
+    rm_error "事务恢复失败，拒绝开始新的修改操作（rc=$rc）。"
+    return "$rc"
+  }
 }
 
 status_cmd() {
@@ -184,15 +188,15 @@ ssh_cmd() {
     status) ssh_detect_json "${1:-root}" "${2:-127.0.0.1}";;
     key-inventory) ssh_key_inventory_json "$1";;
     verify-command) ssh_verification_command_json "$1" "$2" "${3:-}";;
-    add-key) mutation_guard; ssh_add_public_key "$1" "$2";;
-    remove-key) mutation_guard; ssh_remove_public_key "$1" "$2";;
-    migrate-port) mutation_guard; ssh_begin_port_migration "$1";;
-    remove-old-port) mutation_guard; ssh_begin_remove_old_port "$1";;
-    mark-key-verified) mutation_guard; ssh_mark_key_verified "$1" "${2:-}";;
-    disable-password) mutation_guard; ssh_begin_disable_password "$1";;
-    verify-sudo) mutation_guard; ssh_record_sudo_verified "$1";;
-    root-publickey-only) mutation_guard; ssh_begin_root_policy publickey-only root;;
-    root-disable) mutation_guard; ssh_begin_root_policy disable "$1";;
+    add-key) mutation_guard || return $?; ssh_add_public_key "$1" "$2";;
+    remove-key) mutation_guard || return $?; ssh_remove_public_key "$1" "$2";;
+    migrate-port) mutation_guard || return $?; ssh_begin_port_migration "$1";;
+    remove-old-port) mutation_guard || return $?; ssh_begin_remove_old_port "$1";;
+    mark-key-verified) mutation_guard || return $?; ssh_mark_key_verified "$1" "${2:-}";;
+    disable-password) mutation_guard || return $?; ssh_begin_disable_password "$1";;
+    verify-sudo) mutation_guard || return $?; ssh_record_sudo_verified "$1";;
+    root-publickey-only) mutation_guard || return $?; ssh_begin_root_policy publickey-only root;;
+    root-disable) mutation_guard || return $?; ssh_begin_root_policy disable "$1";;
     confirm) mutation_access_guard || return $?; ssh_confirm_pending "${1:-}";;
     rollback-pending) rm_require_root; ssh_rollback_pending "${1:-normal}";;
     recovery-guide) ssh_recovery_guide_json "${1:-}";;
@@ -204,12 +208,12 @@ firewall_cmd() {
   local sub=${1:-status}; shift || true
   case "$sub" in
     status) fw_status_json;;
-    install) mutation_guard; fw_install_packages false;;
-    enable) mutation_guard; fw_enable_safe "$@";;
-    apply) mutation_guard; local nid=$1 node port; shift; node=$(state_get_node "$nid"); port=$(jq -r .listen_port <<<"$node"); fw_apply_whitelist "$nid" "$port" "$@";;
-    verify) mutation_guard; fw_mark_whitelist_verified "$1";;
-    remove-node) mutation_guard; fw_remove_node_rules "$1";;
-    temp-open) mutation_guard; fw_temp_open "$1" "${2:-10}";;
+    install) mutation_guard || return $?; fw_install_packages false;;
+    enable) mutation_guard || return $?; fw_enable_safe "$@";;
+    apply) mutation_guard || return $?; local nid=$1 node port; shift; node=$(state_get_node "$nid"); port=$(jq -r .listen_port <<<"$node"); fw_apply_whitelist "$nid" "$port" "$@";;
+    verify) mutation_guard || return $?; fw_mark_whitelist_verified "$1";;
+    remove-node) mutation_guard || return $?; fw_remove_node_rules "$1";;
+    temp-open) mutation_guard || return $?; fw_temp_open "$1" "${2:-10}";;
     expire-temp) rm_require_root; fw_expire_temp "$1";;
     reconcile-expired) rm_require_root; fw_reconcile_expired;;
     *) return "$RM_RC_PRECONDITION";;
@@ -222,22 +226,22 @@ fail2ban_cmd() {
     status) f2b_status_json;;
     health) f2b_runtime_health_json;;
     recommend) f2b_recommendation_json "${1:-root}";;
-    install) mutation_guard; f2b_install_packages false;;
-    apply) mutation_guard; f2b_apply_ssh_jail "$@";;
-    disable) mutation_guard; f2b_disable_managed;;
+    install) mutation_guard || return $?; f2b_install_packages false;;
+    apply) mutation_guard || return $?; f2b_apply_ssh_jail "$@";;
+    disable) mutation_guard || return $?; f2b_disable_managed;;
     banned) f2b_banned_json;;
-    unban) mutation_guard; f2b_unban "$1";;
+    unban) mutation_guard || return $?; f2b_unban "$1";;
     *) return "$RM_RC_PRECONDITION";;
   esac
 }
 
-backup_cmd() { local sub=${1:-list}; shift || true; case "$sub" in list) backup_list;; verify) [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; backup_verify_json "$1";; create) mutation_guard; backup_create "${1:-config}";; restore) mutation_guard; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; backup_restore_local "$1";; restore-nodes) mutation_guard; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; backup_restore_nodes_only "$1";; *) return "$RM_RC_PRECONDITION";; esac; }
+backup_cmd() { local sub=${1:-list}; shift || true; case "$sub" in list) backup_list;; verify) [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; backup_verify_json "$1";; create) mutation_guard || return $?; backup_create "${1:-config}";; restore) mutation_guard || return $?; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; backup_restore_local "$1";; restore-nodes) mutation_guard || return $?; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; backup_restore_nodes_only "$1";; *) return "$RM_RC_PRECONDITION";; esac; }
 
-update_cmd() { local sub=${1:-status}; shift || true; case "$sub" in core) mutation_guard; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; update_core_to "$1";; rollback-core) mutation_guard; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; update_core_rollback "$1";; manager-package) mutation_guard; [[ -n ${1:-} && -n ${2:-} ]] || return "$RM_RC_PRECONDITION"; update_install_manager_package "$1" "$2" "${3:-}";; rollback-manager) mutation_guard; update_manager_rollback;; verify-manager) update_verify_current_manager;; status) update_status_json;; *) return "$RM_RC_PRECONDITION";; esac; }
+update_cmd() { local sub=${1:-status}; shift || true; case "$sub" in core) mutation_guard || return $?; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; update_core_to "$1";; rollback-core) mutation_guard || return $?; [[ -n ${1:-} ]] || return "$RM_RC_PRECONDITION"; update_core_rollback "$1";; manager-package) mutation_guard || return $?; [[ -n ${1:-} && -n ${2:-} ]] || return "$RM_RC_PRECONDITION"; update_install_manager_package "$1" "$2" "${3:-}";; rollback-manager) mutation_guard || return $?; update_manager_rollback;; verify-manager) update_verify_current_manager;; status) update_status_json;; *) return "$RM_RC_PRECONDITION";; esac; }
 
-remove_cmd() { local sub=${1:-manager}; shift || true; case "$sub" in manager) mutation_guard; rm_confirm '确认删除受管节点与管理器？SSH/UFW/Fail2ban 安全设置默认保留。' || return "$RM_RC_CANCEL"; remove_all_nodes_and_manager false false;; backups) mutation_guard; remove_backups_only;; exports) mutation_guard; remove_exports_only;; *) return "$RM_RC_PRECONDITION";; esac; }
+remove_cmd() { local sub=${1:-manager}; shift || true; case "$sub" in manager) mutation_guard || return $?; rm_confirm '确认删除受管节点与管理器？SSH/UFW/Fail2ban 安全设置默认保留。' || return "$RM_RC_CANCEL"; remove_all_nodes_and_manager false false;; backups) mutation_guard || return $?; remove_backups_only;; exports) mutation_guard || return $?; remove_exports_only;; *) return "$RM_RC_PRECONDITION";; esac; }
 
-maintenance_cmd() { local sub=${1:-status}; shift || true; case "$sub" in status) maintenance_status_json;; prune) mutation_guard; maintenance_prune_safe;; *) return "$RM_RC_PRECONDITION";; esac; }
+maintenance_cmd() { local sub=${1:-status}; shift || true; case "$sub" in status) maintenance_status_json;; prune) mutation_guard || return $?; maintenance_prune_safe;; *) return "$RM_RC_PRECONDITION";; esac; }
 
 interactive_menu() {
   # ENV-01: entering the manager is read-only. Mutating menu actions invoke their own guard.
@@ -395,7 +399,8 @@ case "$cmd" in
     rm_require_root || exit $?
     tx_reconcile_pending || {
       rc=$?
-      [[ $rc == "$RM_RC_RECOVERY_INCOMPLETE" ]] && exit "$rc"
+      rm_error "周期事务恢复失败，停止后续 reconcile 写操作（rc=$rc）。"
+      exit "$rc"
     }
     upstream_rotation_reconcile_expired
     fw_reconcile_expired

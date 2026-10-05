@@ -173,6 +173,47 @@ remove_owned_file_if_unchanged() {
   fi
 }
 
+remove_dynamic_temp_units() {
+  local unit service_logical timer_logical service_path timer_path
+
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    service_logical="/etc/systemd/system/$unit.service"
+    timer_logical="/etc/systemd/system/$unit.timer"
+    service_path=$(rm_path "$service_logical")
+    timer_path=$(rm_path "$timer_logical")
+
+    # Treat a service/timer pair as one lifecycle object. If either side
+    # drifted, do not stop, disable or delete either file automatically.
+    if ! remove_owned_file_matches "$service_path" || ! remove_owned_file_matches "$timer_path"; then
+      [[ -e $service_path || -L $service_path ]] &&
+        remove_record_preserved "$service_path" '动态临时访问单元已漂移或所有权无法证明'
+      [[ -e $timer_path || -L $timer_path ]] &&
+        remove_record_preserved "$timer_path" '动态临时访问单元已漂移或所有权无法证明'
+      continue
+    fi
+
+    rm_systemctl disable --now "$unit.timer" >/dev/null 2>&1 || {
+      rm_error "无法停用受管临时访问 timer: $unit.timer"
+      return "$RM_RC_RECOVERY_INCOMPLETE"
+    }
+    rm_systemctl stop "$unit.service" >/dev/null 2>&1 || {
+      rm_error "无法停止受管临时访问 service: $unit.service"
+      return "$RM_RC_RECOVERY_INCOMPLETE"
+    }
+
+    [[ ! -e $service_path && ! -L $service_path ]] || rm -f -- "$service_path"
+    [[ ! -e $timer_path && ! -L $timer_path ]] || rm -f -- "$timer_path"
+  done < <(jq -r '
+    .owned_files[]?.path
+    | select(test("^/etc/systemd/system/relay-manager-temp-[^/]+\\.(service|timer)$"))
+    | sub("^/etc/systemd/system/";"")
+    | sub("\\.(service|timer)$";"")
+  ' "$RM_STATE_FILE" | sort -u)
+
+  rm_systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
 remove_disable_runtime_units() {
   rm_systemctl disable --now "$RM_MAINT_TIMER" >/dev/null 2>&1 || true
   rm_systemctl stop "$RM_MAINT_SERVICE" >/dev/null 2>&1 || true
@@ -322,12 +363,19 @@ remove_all_nodes_and_manager() {
     }
   fi
 
+  # Expire every tracked temporary access first, including orphaned entries
+  # whose node has already disappeared from the managed node list.
   while IFS= read -r nid; do
     [[ -n $nid ]] || continue
     fw_expire_temp "$nid" || return $?
+  done < <(jq -r '.temporary_opens[]?.node_id' "$RM_STATE_FILE")
+
+  while IFS= read -r nid; do
+    [[ -n $nid ]] || continue
     fw_remove_node_rules "$nid" || return $?
   done < <(jq -r '.nodes[].node_id' "$RM_STATE_FILE")
 
+  remove_dynamic_temp_units || return $?
   remove_disable_runtime_units
   remove_delete_runtime_unit_files || return $?
   remove_owned_file_if_unchanged "$RM_XRAY_CONFIG"

@@ -72,6 +72,14 @@ state_validate_file() {
     (.nodes|type=="array") and (.upstreams|type=="array") and (.sources|type=="array") and
     (.owned_files|type=="array") and (.owned_services|type=="array") and
     (.owned_firewall_rules|type=="array") and (.temporary_opens|type=="array") and
+    ([.temporary_opens[]? |
+      (.node_id|type=="string" and length>0) and
+      (.deadline_epoch|type=="number" and .>=0 and .==floor) and
+      (.rule_args|type=="array" and length>0) and
+      (.unit|type=="string" and test("^relay-manager-temp-[A-Za-z0-9_.-]+$")) and
+      ((has("phase")|not) or (.phase=="ARMED" or .phase=="APPLYING" or .phase=="APPLIED"))
+    ] | all) and
+    (([.temporary_opens[]?.node_id] | length) == ([.temporary_opens[]?.node_id] | unique | length)) and
     ([.nodes[]? |
       (.node_id|type=="string" and length>0) and
       ((has("enabled")|not) or (.enabled|type=="boolean")) and
@@ -141,7 +149,7 @@ state_bump_revision() { state_update_filter '.config_revision += 1'; }
 state_add_owned_file() {
   local path=$1 sha=${2:-}
   [[ $path == /* ]] || return "$RM_RC_PRECONDITION"
-  state_update_filter '.owned_files = ((.owned_files + [{path:$path,sha256:$sha}]) | unique_by(.path))' --arg path "$path" --arg sha "$sha"
+  state_update_filter '.owned_files = ([.owned_files[]? | select(.path!=$path)] + [{path:$path,sha256:$sha}])' --arg path "$path" --arg sha "$sha"
 }
 
 state_add_owned_service() {
