@@ -129,6 +129,29 @@ case_external_drift_preserved() (
   assert_eq NEEDS_RECOVERY "$(jq -r .status "$(tx_file "$id")")"
 )
 
+case_boot_guard_rollback_skips_service_restore() (
+  set -Eeuo pipefail
+  root=$(new_test_root); trap 'rm -rf "$root"' EXIT
+  export RM_ROOT="$root" RM_TEST_MODE=1 RM_SYSTEMCTL_LOG="$root/systemctl.log"
+  : >"$RM_SYSTEMCTL_LOG"
+  source "$PROJECT_DIR/lib/transaction.sh"
+  state_init
+
+  dest="$root/etc/relay-manager/demo.conf"; printf 'old\n' >"$dest"
+  src=$(mktemp); printf 'new\n' >"$src"; trap 'rm -rf "$root"; rm -f "$src"' EXIT
+  id=$(tx_begin boot-guard)
+  tx_stage_file "$id" "$src" "$dest"
+  tx_update "$id" '.services=[{name:"ssh.socket",was_enabled:true,was_active:true,managed_change:true}]'
+  tx_apply "$id"
+
+  tx_rollback "$id" boot-guard-test false
+  assert_eq old "$(cat "$dest")" 'boot-guard rollback did not restore files'
+  assert_eq ROLLED_BACK "$(jq -r .status "$(tx_file "$id")")"
+  if grep -Eq '(^| )(enable|disable|start|stop) ssh\.socket($| )' "$RM_SYSTEMCTL_LOG"; then
+    fail 'boot-guard transaction rollback touched SSH service state'
+  fi
+)
+
 case_conflicting_transaction_blocked() (
   set -Eeuo pipefail
   root=$(new_test_root); trap 'rm -rf "$root"' EXIT
@@ -147,5 +170,6 @@ case_pending_recovery
 case_maintenance_reconcile_deadline
 case_kill_window_recovery
 case_external_drift_preserved
+case_boot_guard_rollback_skips_service_restore
 case_conflicting_transaction_blocked
-pass 'transaction apply/commit/rollback, deadline-aware reconcile, stale-plan, recovery, drift, conflict tests'
+pass 'transaction apply/commit/rollback, boot-guard recovery, deadline-aware reconcile, stale-plan, recovery, drift, conflict tests'
