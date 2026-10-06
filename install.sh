@@ -21,8 +21,47 @@ Notes:
 TXT
 }
 
+install_apt_lock_is_clear() {
+  local lock probe_rc
+  command -v apt-get >/dev/null 2>&1 || {
+    rm_error '缺少 apt-get，无法自动安装依赖'
+    return "$RM_RC_PRECONDITION"
+  }
+
+  for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+    [[ -e $lock ]] || continue
+    if command -v fuser >/dev/null 2>&1; then
+      probe_rc=1
+      fuser "$lock" >/dev/null 2>&1 && probe_rc=0 || probe_rc=$?
+      if ((probe_rc==0)); then
+        rm_error "包管理器当前不可安全使用: 检测到锁文件正被占用: $lock"
+        return "$RM_RC_PRECONDITION"
+      fi
+      if ((probe_rc!=1)); then
+        rm_error "包管理器当前不可安全使用: 无法可靠检查锁文件: $lock"
+        return "$RM_RC_PRECONDITION"
+      fi
+    else
+      probe_rc=1
+      _system_proc_file_in_use "$lock" && probe_rc=0 || probe_rc=$?
+      case "$probe_rc" in
+        0)
+          rm_error "包管理器当前不可安全使用: 检测到锁文件正被占用: $lock"
+          return "$RM_RC_PRECONDITION"
+          ;;
+        1) ;;
+        *)
+          rm_error "包管理器当前不可安全使用: 缺少 fuser，且 /proc 回退检查不可用"
+          return "$RM_RC_PRECONDITION"
+          ;;
+      esac
+    fi
+  done
+}
+
 install_dependencies() {
-  local missing=() c pkglist=() pkg
+  local missing=() still_missing=() c pkglist=() pkg
+  rm_require_root || return $?
   for c in jq curl openssl ip ss flock unzip sha256sum tar fuser dig; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
   ((${#missing[@]}==0)) && return 0
   [[ -f /etc/debian_version ]] || { rm_error "缺少依赖: ${missing[*]}"; return "$RM_RC_PRECONDITION"; }
@@ -43,14 +82,19 @@ install_dependencies() {
     rm_confirm '确认安装依赖?' || return "$RM_RC_CANCEL"
   fi
 
-  local pkg_state
-  pkg_state=$(system_pkg_manager_json)
-  jq -e '.kind=="apt" and .locked==false' <<<"$pkg_state" >/dev/null || {
-    rm_error "包管理器当前不可安全使用: $(jq -r .reason <<<"$pkg_state")"
-    return "$RM_RC_PRECONDITION"
-  }
+  # This preflight intentionally does not depend on jq: jq itself may be one
+  # of the packages required by a clean release-package installation.
+  install_apt_lock_is_clear || return $?
   DEBIAN_FRONTEND=noninteractive apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkglist[@]}"
+
+  for c in jq curl openssl ip ss flock unzip sha256sum tar fuser dig; do
+    command -v "$c" >/dev/null 2>&1 || still_missing+=("$c")
+  done
+  ((${#still_missing[@]}==0)) || {
+    rm_error "依赖安装后仍缺少命令: ${still_missing[*]}"
+    return "$RM_RC_PRECONDITION"
+  }
 }
 
 install_source_tree() {
@@ -86,8 +130,25 @@ install_source_tree() {
 }
 
 install_package_file() {
-  local package=$1 expected=$2 trusted_key=${3:-}
+  local package=$1 expected=$2 trusted_key=${3:-} actual
+  rm_require_root || return $?
+  [[ -f $package && ! -L $package ]] || { rm_error '管理器发行包必须是普通文件'; return "$RM_RC_PRECONDITION"; }
   [[ $expected =~ ^[0-9a-fA-F]{64}$ ]] || { rm_error 'SHA-256 必须是 64 位十六进制'; return "$RM_RC_PRECONDITION"; }
+  command -v sha256sum >/dev/null 2>&1 || {
+    rm_error '缺少 sha256sum，无法在安装依赖前验证发行包'
+    return "$RM_RC_PRECONDITION"
+  }
+  actual=$(sha256sum -- "$package")
+  actual=${actual%% *}
+  [[ $actual == "${expected,,}" ]] || {
+    rm_error '安装包 SHA-256 不匹配'
+    return "$RM_RC_PRECONDITION"
+  }
+
+  # Verify the bootstrap-pinned outer digest before any package-manager write,
+  # then make the release package path provide the same runtime dependencies
+  # as a source-tree install.
+  install_dependencies || return $?
   # shellcheck source=lib/update.sh
   source "$BASE_DIR/lib/update.sh"
   update_install_manager_package "$package" "${expected,,}" "$trusted_key"
