@@ -41,7 +41,22 @@ case "${1:-}" in
   *) exit 10 ;;
 esac
 EOF
-chmod 0755 "$root/fakebin/sshd"
+cat >"$root/fakebin/dpkg-query" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+  -S)
+    [[ "${2:-}" == /etc/fail2ban/jail.d/defaults-debian.conf ]] || exit 1
+    printf '%s: %s\n' "${RM_F2B_TEST_DPKG_OWNER:-fail2ban}" "$2"
+    ;;
+  -W)
+    [[ "${*: -1}" == fail2ban ]] || exit 1
+    printf ' /etc/fail2ban/jail.d/defaults-debian.conf %s\n' "${RM_F2B_TEST_DISTRO_MD5:?}"
+    ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 0755 "$root/fakebin/sshd" "$root/fakebin/dpkg-query"
 export PATH="$root/fakebin:$PATH"
 
 cat >"$root/etc/default/ufw" <<'EOF'
@@ -86,6 +101,27 @@ if grep -Fq '198.51.100.9' "$cfg"; then
   fail 'an unrelated upstream whitelist leaked into Fail2ban ignoreip'
 fi
 
+cat >"$root/etc/fail2ban/jail.d/defaults-debian.conf" <<'EOF'
+[DEFAULT]
+banaction = nftables
+backend = systemd
+
+[sshd]
+enabled = true
+EOF
+export RM_F2B_TEST_DISTRO_MD5
+RM_F2B_TEST_DISTRO_MD5=$(md5sum "$root/etc/fail2ban/jail.d/defaults-debian.conf" | awk '{print $1}')
+assert_json "$(f2b_existing_sshd_overrides_json)" 'length==0'
+
+printf '# local modification\n' >>"$root/etc/fail2ban/jail.d/defaults-debian.conf"
+assert_json "$(f2b_existing_sshd_overrides_json)" 'length==1 and .[0]=="/etc/fail2ban/jail.d/defaults-debian.conf"'
+sed -i '$d' "$root/etc/fail2ban/jail.d/defaults-debian.conf"
+
+export RM_F2B_TEST_DPKG_OWNER=other-package
+assert_json "$(f2b_existing_sshd_overrides_json)" 'length==1 and .[0]=="/etc/fail2ban/jail.d/defaults-debian.conf"'
+export RM_F2B_TEST_DPKG_OWNER=fail2ban
+assert_json "$(f2b_existing_sshd_overrides_json)" 'length==0'
+
 cat >"$root/etc/fail2ban/jail.local" <<'EOF'
 [sshd]
 enabled = true
@@ -94,6 +130,15 @@ rc=0
 f2b_apply_ssh_jail >/dev/null 2>&1 || rc=$?
 assert_eq 10 "$rc" 'existing administrator-managed sshd jail was overwritten'
 rm -f "$root/etc/fail2ban/jail.local"
+
+cat >"$root/etc/fail2ban/jail.d/custom.local" <<'EOF'
+[sshd]
+enabled = true
+EOF
+rc=0
+f2b_apply_ssh_jail >/dev/null 2>&1 || rc=$?
+assert_eq 10 "$rc" 'administrator-managed jail.d sshd fragment was overwritten'
+rm -f "$root/etc/fail2ban/jail.d/custom.local"
 
 applied=$(f2b_apply_ssh_jail 203.0.113.5)
 assert_json "$applied" '
