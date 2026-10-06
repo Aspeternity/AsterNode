@@ -15,7 +15,14 @@ f2b_client() {
     case "${1:-}" in
       -t) return "${RM_F2B_TEST_CONFIG_RC:-0}" ;;
       status)
-        if [[ ${2:-} == sshd ]]; then printf 'Status for the jail: sshd\n'; return "${RM_F2B_TEST_STATUS_RC:-0}"; fi
+        if [[ ${2:-} == sshd ]]; then
+          if [[ ${RM_F2B_TEST_STATUS_FAILS:-0} =~ ^[0-9]+$ ]] && ((RM_F2B_TEST_STATUS_FAILS > 0)); then
+            RM_F2B_TEST_STATUS_FAILS=$((RM_F2B_TEST_STATUS_FAILS - 1))
+            return 1
+          fi
+          printf 'Status for the jail: sshd\n'
+          return "${RM_F2B_TEST_STATUS_RC:-0}"
+        fi
         ;;
       get)
         if [[ ${2:-} == sshd && ${3:-} == banip ]]; then printf '%s\n' "${RM_F2B_TEST_BANNED:-}"; return 0; fi
@@ -380,6 +387,18 @@ f2b_render_config() {
   } >"$out"
 }
 
+f2b_wait_sshd_ready() {
+  local attempts=${RM_F2B_READY_ATTEMPTS:-10} delay=${RM_F2B_READY_DELAY:-1} i
+  [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=10
+
+  for ((i=1; i<=attempts; i++)); do
+    f2b_client status sshd >/dev/null 2>&1 && return 0
+    ((i < attempts)) || break
+    if [[ ${RM_TEST_MODE} != 1 ]]; then sleep "$delay"; fi
+  done
+  return 1
+}
+
 f2b_apply_ssh_jail() {
   rm_require_root || return $?
   if [[ ${RM_TEST_MODE} != 1 ]] && ! rm_have fail2ban-client; then
@@ -420,9 +439,9 @@ f2b_apply_ssh_jail() {
       rm -rf "$tmpdir"; return "$rc"
     }
   fi
-  if ! f2b_client status sshd >/dev/null 2>&1; then
+  if ! f2b_wait_sshd_ready; then
     rc=$RM_RC_APPLY_ROLLED_BACK
-    tx_rollback "$tx" 'sshd jail not active after restart' || rc=$?
+    tx_rollback "$tx" 'sshd jail not ready after restart' || rc=$?
     [[ ${RM_TEST_MODE} == 1 ]] && rm_systemctl restart fail2ban || systemctl restart fail2ban 2>/dev/null || true
     rm -rf "$tmpdir"; return "$rc"
   fi

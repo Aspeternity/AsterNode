@@ -140,6 +140,19 @@ f2b_apply_ssh_jail >/dev/null 2>&1 || rc=$?
 assert_eq 10 "$rc" 'administrator-managed jail.d sshd fragment was overwritten'
 rm -f "$root/etc/fail2ban/jail.d/custom.local"
 
+export RM_F2B_TEST_STATUS_RC=1
+rc=0
+f2b_apply_ssh_jail 203.0.113.5 >/dev/null 2>&1 || rc=$?
+assert_eq 20 "$rc" 'Fail2ban readiness timeout did not roll back'
+[[ ! -e "$root/etc/fail2ban/jail.d/relay-manager-ssh.local" ]] ||
+  fail 'timed-out Fail2ban apply left the managed fragment behind'
+latest_f2b_tx=$(find "$root/var/lib/relay-manager/transactions" -mindepth 2 -maxdepth 2 -name transaction.json -type f -print0 |
+  xargs -0 jq -s '[.[]|select(.type=="fail2ban-ssh")]|last')
+assert_json "$latest_f2b_tx" '.status=="ROLLED_BACK" and .failure_reason=="sshd jail not ready after restart"'
+
+unset RM_F2B_TEST_STATUS_RC
+export RM_F2B_TEST_STATUS_FAILS=2
+: >"$RM_F2B_LOG"
 applied=$(f2b_apply_ssh_jail 203.0.113.5)
 assert_json "$applied" '
   .status=="applied" and .jail=="sshd" and .backend.backend=="polling" and
@@ -155,7 +168,11 @@ assert_json "$missing_source" '.status=="abnormal" and .backend=="polling" and .
 : >"$root/var/log/auth.log"
 
 grep -Fq -- '-t' "$RM_F2B_LOG" || fail 'Fail2ban candidate config was not validated'
+status_attempts=$(grep -Fc 'status sshd' "$RM_F2B_LOG" || true)
+((status_attempts >= 3)) || fail 'Fail2ban readiness did not retry transient sshd status failures'
 grep -Fq 'restart fail2ban' "$RM_SYSTEMCTL_LOG" || fail 'Fail2ban service was not restarted'
+unset RM_F2B_TEST_STATUS_FAILS
+f2b_wait_sshd_ready || fail 'Fail2ban readiness immediate-success path failed'
 assert_json "$(cat "$RM_STATE_FILE")" '
   any(.owned_files[]; .path=="/etc/fail2ban/jail.d/relay-manager-ssh.local")
 '
