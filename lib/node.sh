@@ -454,6 +454,12 @@ node_apply_candidate_state() {
     fi
   elif [[ $service_mode == normal || $was_active == true ]]; then
     tx_mark_service_changed "$tx" "$RM_XRAY_SERVICE" || true
+    rm_systemctl disable "$RM_XRAY_SERVICE" || {
+      rc=$RM_RC_APPLY_ROLLED_BACK
+      tx_rollback "$tx" 'Xray service disable failed' || rc=$?
+      rm -rf "$tmpdir"
+      return "$rc"
+    }
     rm_systemctl stop "$RM_XRAY_SERVICE" || {
       rc=$RM_RC_APPLY_ROLLED_BACK
       tx_rollback "$tx" 'Xray service stop failed' || rc=$?
