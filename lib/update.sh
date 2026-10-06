@@ -131,6 +131,25 @@ update_verify_release_dir() {
     return "$RM_RC_PRECONDITION"
   }
 
+  # OpenSSL can accept a valid RSA signature with ignored trailing bytes.
+  # Reject non-canonical signature files by proving that removing the final
+  # byte makes the signature invalid. This keeps the signed artifact itself
+  # byte-exact instead of accepting "valid signature + trailing garbage".
+  local sig_size truncated_sig
+  sig_size=$(stat -c '%s' "$sig")
+  ((sig_size>1)) || {
+    rm_error '发行包签名长度无效'
+    return "$RM_RC_PRECONDITION"
+  }
+  truncated_sig=$(mktemp)
+  head -c "$((sig_size-1))" "$sig" >"$truncated_sig"
+  if openssl dgst -sha256 -verify "$key" -signature "$truncated_sig" "$sums" >/dev/null 2>&1; then
+    rm -f "$truncated_sig"
+    rm_error '发行包签名包含可忽略的尾随数据'
+    return "$RM_RC_PRECONDITION"
+  fi
+  rm -f "$truncated_sig"
+
   jq -e --argjson schema "$RM_SCHEMA_VERSION" '
     .release_format==1 and
     .project=="relay-manager" and .product=="AsterNode" and
