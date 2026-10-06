@@ -30,12 +30,28 @@ f2b_client() {
   fail2ban-client "$@"
 }
 
+f2b_is_trusted_distro_sshd_default() {
+  local f=$1 expected_path owner expected_md5 actual_md5
+  expected_path=$(rm_path /etc/fail2ban/jail.d/defaults-debian.conf)
+  [[ $f == "$expected_path" && -f $f && ! -L $f ]] || return 1
+  rm_have dpkg-query && rm_have md5sum || return 1
+
+  owner=$(dpkg-query -S /etc/fail2ban/jail.d/defaults-debian.conf 2>/dev/null | awk -F: 'NR==1 {gsub(/[[:space:]]+/, "", $1); print $1}')
+  [[ $owner == fail2ban ]] || return 1
+
+  expected_md5=$(dpkg-query -W -f='${Conffiles}\n' fail2ban 2>/dev/null | awk '$1=="/etc/fail2ban/jail.d/defaults-debian.conf" {print $2; exit}')
+  [[ $expected_md5 =~ ^[0-9a-fA-F]{32}$ ]] || return 1
+  actual_md5=$(md5sum "$f" 2>/dev/null | awk '{print $1}') || return 1
+  [[ ${actual_md5,,} == ${expected_md5,,} ]]
+}
+
 f2b_existing_sshd_overrides_json() {
   local f items='[]'
   for f in "$(rm_path /etc/fail2ban/jail.local)" "$(rm_path /etc/fail2ban/jail.d)"/*; do
     [[ -f $f && ! -L $f ]] || continue
     [[ $f == "$RM_F2B_DROPIN" ]] && continue
     if grep -Eq '^[[:space:]]*\[sshd\][[:space:]]*$' "$f"; then
+      f2b_is_trusted_distro_sshd_default "$f" && continue
       local logical=$f
       [[ -n $RM_ROOT ]] && logical=${f#"${RM_ROOT%/}"}
       items=$(jq -c --arg p "$logical" '.+[$p]' <<<"$items")
