@@ -96,6 +96,20 @@ rc=0
 update_install_manager_package "$package2" "$sha2" "$built_pub" >/dev/null 2>&1 || rc=$?
 assert_eq 10 "$rc" 'package with wrong signing key was accepted'
 
+# A valid signature with appended trailing bytes must be rejected. OpenSSL may
+# otherwise accept the valid signature prefix and ignore the extra bytes.
+sigtrail="$work/signature-trailing"
+mkdir "$sigtrail"
+tar -xzf "$package" -C "$sigtrail"
+printf x >>"$sigtrail/$top/RELEASE.sig"
+sigtrail_pkg="$work/signature-trailing.tar.gz"
+tar -C "$sigtrail" -czf "$sigtrail_pkg" "$top"
+sigtrail_sha=$(sha256sum "$sigtrail_pkg" | awk '{print $1}')
+rc=0
+update_install_manager_package "$sigtrail_pkg" "$sigtrail_sha" "$built_pub" >/dev/null 2>&1 || rc=$?
+assert_eq 10 "$rc" 'release signature with trailing data was accepted'
+assert_eq "$root/usr/local/lib/relay-manager/versions/$version" "$(readlink -f "$root/usr/local/lib/relay-manager/current")" 'signature trailing-data rejection changed current manager'
+
 # Extra unsigned payload must be rejected even when the original checksum signature remains valid.
 extra="$work/extra"
 mkdir "$extra"
