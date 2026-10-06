@@ -2,14 +2,15 @@
 
 ## 当前阻断生产使用
 
-1. Stage B 的自动化/配置级基线已稳定，但真实 systemd、IPv4/双栈/IPv6-only、NAT、T24/T25 仍未完成。
-2. Stage C 的 SSH/UFW/Fail2ban 代码与隔离自动化在 `bd4d10d` / CI #88 达到 `21 passed / 0 failed / 0 skipped`，但 T05-T20/T26 的真实远程登录、故障注入、白名单对照和实际封禁仍待最终统一 VPS 验收。
+1. Stage B 已完成 T25 真实 3x-ui → 落地 Xray 全链路，但系统/架构/网络矩阵并未全部覆盖；T24 独立客户端记录、ARM64、IPv6-only/NAT 等仍按对应 checklist 视为未验证。
+2. Stage C 的 Ubuntu 24.04 `ssh.socket`、SSH crash-recovery、UFW 来源对照和临时公网开放关键路径已有实机 PASS；Fail2ban 实际攻击触发/封禁/解封及未覆盖的发行版/复杂防火墙组合仍是发布阻断项。
 3. 本机 SSH 回滚不能修复云安全组、NAT、供应商网络故障或损坏系统；`ssh recovery-guide` 只能给出本机/控制台恢复路径。
-4. UFW 白名单在完成“允许来源成功 + 非允许来源失败”的外部对照前保持未验证。复杂 nftables、firewalld、Docker/容器链或自定义 UFW framework 会阻止自动接管。
-5. Fail2ban 当前只管理 AsterNode 自有 sshd jail。实际攻击触发、封禁与解封效果必须在隔离 VM/VPS 验证；全局数据库保留和系统 logrotate 仅观察，不自动改写。
-6. Stage D 的代码与隔离自动化已在 `489fb8a` / CI #103 收尾，但远程 bootstrap、真实 manager/core 更新回退、同机/跨机恢复、卸载重装、低资源长期增长与故障注入仍需 `docs/STAGE_D_REAL_VPS_CHECKLIST.md` 真实验收。
+4. UFW 白名单只有在“允许来源成功 + 非允许来源失败”的外部对照后才能标记 verified；已完成的单一 VPS 证据不外推到其他云、防火墙或网络栈。
+5. Fail2ban 当前只管理 AsterNode 自有 sshd jail。全局数据库保留和系统 logrotate 仅观察，不自动改写。
+6. Stage D 的签名发行、bootstrap、更新/回退、备份/恢复、卸载和维护逻辑已有自动化覆盖，但 D-VPS-01～09 尚未全部形成真实 VPS 证据。
 7. ARM64 固定资产元数据已记录，但当前 CI 的真实 Xray 执行仍是 amd64；ARM64 必须在对应架构实测。
-8. Target 探测只代表执行探测的 VPS 当时网络，不会自动选择 Target 或修改节点。
+8. 正式公共 bootstrap URL、发行签名密钥运维、License 与首个 RC 的 VERSION/tag/release 仍未最终落定；当前 `VERSION` 保持 `0.2.0-dev`。
+9. Target 探测只代表执行探测的 VPS 当时网络，不会自动选择 Target 或修改节点。
 
 ## 当前安全边界
 

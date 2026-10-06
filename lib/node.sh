@@ -566,8 +566,9 @@ node_delete() {
 }
 
 node_set_enabled() {
-  local nid=$1 val=$2 tmpdir candidate rc
+  local nid=$1 val=$2 tmpdir candidate rc change_type
   [[ $val == true || $val == false ]] || return "$RM_RC_PRECONDITION"
+  if [[ $val == true ]]; then change_type=node-enable; else change_type=node-disable; fi
   state_init >/dev/null
   state_get_node "$nid" >/dev/null || { rm_error '节点不存在'; return "$RM_RC_PRECONDITION"; }
   tmpdir=$(rm_safe_tmpdir) || return $?
@@ -575,7 +576,7 @@ node_set_enabled() {
   jq --arg nid "$nid" --argjson val "$val" '
     (.nodes[]|select(.node_id==$nid)).enabled=$val | .config_revision+=1
   ' "$RM_STATE_FILE" >"$candidate"
-  node_apply_candidate_state "$candidate" node-enable || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
+  node_apply_candidate_state "$candidate" "$change_type" || { rc=$?; rm -rf "$tmpdir"; return "$rc"; }
   rm -rf "$tmpdir"
 }
 

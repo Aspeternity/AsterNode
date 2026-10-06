@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased - Release preparation
+
+- Current frozen development baseline is `e532bb0` / CI #212: 33 passed, 0 failed, 0 skipped; Bash syntax, ShellCheck and pinned Xray v26.3.27 real-core parsing all pass.
+- Hardened interrupted SSH and firewall mutations so persistent writes stay in the manager process and recover fail-closed after SIGKILL/crash windows.
+- Made temporary UFW public access require a durable maintenance reconciler, replace same-match managed DENY rules safely, verify live markers instead of trusting UFW exit status alone, and restore the managed DENY on expiry/recovery.
+- Disabled and stopped the managed Xray service when no enabled nodes remain; real VPS validation covered disable → re-enable → final delete and ended at `inactive + disabled`.
+- Real VPS evidence now includes T25 3x-ui → landing Xray end-to-end success, SSH recovery fault injection, UFW external contrast / temporary-open lifecycle, and durable-reconciler crash recovery.
+- Release documentation is being refreshed to distinguish completed real-VPS evidence from the remaining blockers. `VERSION` intentionally remains `0.2.0-dev` until the remaining release Gate is closed; the planned first candidate is `1.0.0-rc.1`.
+
 ## Unreleased - Stage D maintenance development
 
 - Fixed firewall verification reporting: status and Doctor now aggregate current external-contrast evidence across all enabled whitelist nodes, fail closed when any required node is unverified, and temporarily clear effective verification while a managed public-open exception is active.

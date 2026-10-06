@@ -5,14 +5,14 @@
 - 项目仓库：`Aspeternity/AsterNode`
 - 管理器版本：`0.2.0-dev`
 - 分支：`dev/stage-d-maintenance`
-- Stage D 稳定功能基线：`489fb8ac94f8847d68ad4f46a27f9be04deb6ef0`
-- GitHub Actions：#103，`success`
-- 自动化：`27 passed / 0 failed / 0 skipped`
+- 当前冻结基线：`e532bb0928cd465dc356c45394aebb02270e1bab`
+- GitHub Actions：#212，`success`
+- 自动化：`33 passed / 0 failed / 0 skipped`
 - Bash syntax：PASS
 - ShellCheck：PASS
 - 固定 Xray v26.3.27 服务端/客户端真实核心配置解析：PASS
 
-> Stage A-D 的功能代码与隔离自动化已收尾。真实 VPS Gate 尚未执行，不能把当前状态描述为生产环境最终通过。未经用户明确授权，不合并到 `main`。
+> Stage A-D 的功能代码与隔离自动化已收尾，T25、SSH/UFW crash-recovery 与 Xray lifecycle 等关键真实 VPS 路径已通过；剩余 Gate 尚未闭环，仍不能描述为生产稳定。未经用户明确授权，不合并到 `main`。
 
 ## Stage D 已实现
 
@@ -62,8 +62,8 @@
 
 ```text
 lib/update.sh
-  -> tools/build-release.sh
-  -> tools/generate-bootstrap.sh
+  -> tools/release/build-package.sh
+  -> tools/release/build-bootstrap.sh
   -> lib/backup.sh
   -> lib/remove.sh
   -> lib/maintenance.sh
@@ -90,14 +90,15 @@ lib/update.sh
 
 ## 尚不能标为最终通过
 
-以下真实证据仍缺失：
+以下真实/发布证据仍缺失：
 
 - 固定版本远程 bootstrap 的真实 HTTPS 下载、安装、重复执行与离线边界。
 - manager/core 真实升级、服务切换、故障回滚和重启恢复。
 - 第二台 VPS 的跨机器恢复与人工复核启用。
 - 卸载后真实 systemd/进程/端口/文件/重装状态对账。
 - 低配 VPS 的长期磁盘/RSS/CPU 与维护 timer 行为。
-- B/C 阶段尚未完成的真实网络、SSH、UFW、Fail2ban、T24/T25 门槛。
+- Fail2ban 实际封禁/解封、ARM64 与未覆盖系统/网络矩阵。
+- 正式 bootstrap URL、发行密钥运维、License，以及 RC VERSION/tag/release。
 
 具体步骤见三份清单：
 
@@ -107,4 +108,4 @@ lib/update.sh
 
 ## 下一步
 
-进入统一真实 VPS 验收。按项目既定计划，先不继续扩功能；真实 Gate 发现的问题在当前 Stage D 分支修复并重新跑完整 CI。全部 Gate 通过后，再准备首个 `v1.0.0-rc` 候选。未经用户明确授权，不合并到 `main`。
+进入 release-prep 冻结：不继续扩功能，只修复发布阻断项并补齐剩余真实 Gate。当前 `VERSION` 保持 `0.2.0-dev`；Gate 全部通过后，以单独版本提交切换到计划的 `1.0.0-rc.1`。未经用户明确授权，不合并到 `main`。

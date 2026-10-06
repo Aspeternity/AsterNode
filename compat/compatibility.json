@@ -42,20 +42,20 @@
   },
   "client_profiles": {
     "3x-ui": {
-      "status": "requires_real_vps_validation",
+      "status": "validated_real_vps_t25",
       "json_profile": "xray-v26.3.27",
       "share_uri_transport": "type=tcp",
       "notes": [
-        "Panel UI field labels vary by 3x-ui version; do not claim one-click compatibility until T25 is recorded."
+        "One recorded T25 real 3x-ui -> landing Xray chain passed; do not claim universal one-click compatibility across panel/core versions."
       ]
     }
   },
-  "metadata_checked_on": "2026-10-02",
+  "metadata_checked_on": "2026-10-06",
   "validation": {
     "amd64_config_ci": {
       "status": "passed",
-      "github_actions_run": 59,
-      "commit": "0a5be45ae50b56e46729f65c50ea01020f9bfa22",
+      "github_actions_run": 212,
+      "commit": "e532bb0928cd465dc356c45394aebb02270e1bab",
       "xray_version": "26.3.27",
       "server_config_parse": "passed",
       "client_config_parse": "passed"
@@ -67,7 +67,9 @@
       "status": "unverified"
     },
     "t25_3xui_end_to_end": {
-      "status": "unverified"
+      "status": "passed_real_vps",
+      "recorded_on": "2026-10-03",
+      "scope": "one recorded 3x-ui line VPS -> AsterNode landing Xray end-to-end chain"
     }
   }
 }

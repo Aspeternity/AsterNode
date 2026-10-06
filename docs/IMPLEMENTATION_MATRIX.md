@@ -50,7 +50,7 @@
 | FW-07 | C | 完成（语义/隔离） | lib/firewall.sh | test_stage_c_firewall.sh; CI #88 | UFW 未实施时明确 not_locally_enforced/unverified；空白名单在受管 UFW 下为节点端口拒绝 |
 | FW-08 | C | 完成（语义） | lib/firewall.sh | test_stage_c_firewall.sh | 明确规则变更主要影响新连接，不默认清理 conntrack；当前未实现破坏性的全局立即撤销 |
 | FW-09 | C | 部分完成 | lib/firewall.sh; templates/relay-manager-firewall-guard.service | test_stage_c_firewall.sh; test_stage_b_core_service.sh; CI #88 | 默认 10 分钟、精确撤销、自启动前过期回收已实现；T20 真重启/真实连接待 VPS |
-| UP-01 | B | 完成（隔离/配置级） | lib/node.sh; lib/export.sh | test_stage_b_node.sh; CI #59 | 首条线路机稳定 ID/独立 UUID 已覆盖；真实线路链路仍看 T25 |
+| UP-01 | B | 完成（隔离/配置级 + 单组实机） | lib/node.sh; lib/export.sh | test_stage_b_node.sh; CI #212; T25 real VPS PASS | 首条线路机稳定 ID/独立 UUID 已覆盖；已完成一组真实 3x-ui → 落地链路，不外推到全部版本矩阵 |
 | UP-02 | B | 完成（隔离） | lib/node.sh | test_stage_b_node.sh; CI #59 | CRUD、启停、来源、轮换已覆盖；真实来源连通仍待 VPS |
 | UP-03 | B | 部分完成 | lib/node.sh; lib/export.sh | test_stage_b_node.sh; test_stage_b_export.sh | 删除/撤销状态与导出已测；T22 现有连接/新连接行为需真实网络验证 |
 | UP-04 | B | 完成（模型/隔离） | lib/state.sh; lib/node.sh | test_stage_b_node.sh | 共享出口可用独立 UUID；NAT 真实环境仍待矩阵测试 |
@@ -74,15 +74,15 @@
 | EXPORT-01 | B | 完成（隔离） | lib/export.sh | test_stage_b_export.sh | 参数表、URI、单 outbound 与合并说明已生成 |
 | EXPORT-02 | B | 完成（隔离） | lib/export.sh; protocols/vless-reality.sh | test_stage_b_export.sh | 必要字段/IPv6 URI/转义已测，server privateKey 不导出 |
 | EXPORT-03 | B | 部分完成 | compat/compatibility.json; lib/export.sh | CI #59 real Xray config parse | 固定 profile 配置可被真实 Xray 解析；T24 实际客户端连接仍未验证 |
-| EXPORT-04 | B | 部分完成 | lib/export.sh | test_stage_b_export.sh | 3x-ui 字段映射与路由说明已生成；不声明一键兼容，T25 待真实面板 |
+| EXPORT-04 | B | 部分完成（含单组实机） | lib/export.sh | test_stage_b_export.sh; T25 real VPS PASS | 3x-ui 字段映射与路由说明已生成；一组真实面板链路已通过，但仍不声明跨版本一键兼容 |
 | F2B-01 | C | 完成（逻辑/隔离） | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | 密码开放时推荐、纯 key 可选；已有管理员 sshd jail 冲突时拒绝覆盖 |
 | F2B-02 | C | 完成（逻辑/隔离） | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | file/systemd backend、python-systemd 依赖、UFW banaction、实际 SSH 端口与 systemd 无 logpath 已覆盖 |
 | F2B-03 | C | 部分完成 | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | 配置/服务/jail/日志源健康、ban 列表/单 IP unban/显式 ignore 已实现；T26 真实 Fail2ban 封禁/解封仍待隔离 VM/VPS |
 | F2B-04 | C | 完成（策略/隔离） | lib/fail2ban.sh | test_stage_c_fail2ban.sh; CI #88 | 自有 jail maxmatches/findtime/bantime 已固定记录；全局数据库/logrotate 只观察不改；disable 只停自有 jail |
 | DIAG-01 | B/D | 部分完成 | diagnostics.sh | test_stage_b_diagnostics.sh | D1-D4 分层与证据失效检测已实现；D4 必须由真实线路 VPS 记录 |
 | DIAG-02 | B/D | 完成（Stage B 范围） | diagnostics.sh | test_stage_b_diagnostics.sh | 脱敏包 0600、默认不联网、不上传、凭据不进入包；D 阶段再扩展发行/长期日志边界 |
-| UPDATE-01 | D | 完成（隔离/发行级） | lib/update.sh; tools/build-release.sh | test_stage_d_release.sh; CI #103 | 签名 manifest、SHA256SUMS、文件集合/大小/权限/哈希与危险归档输入已自动化；真实固定 URL 下载待 VPS |
-| UPDATE-02 | D | 完成（隔离/信任边界） | tools/generate-bootstrap.sh; install.sh | test_stage_d_bootstrap.sh; CI #103 | bootstrap 固定版本、包/公钥 URL 与 SHA-256，不跟随 main/latest；首次 bootstrap HTTPS 信任仍需发布流程与 VPS 记录 |
+| UPDATE-01 | D | 完成（隔离/发行级） | lib/update.sh; tools/release/build-package.sh | test_stage_d_release.sh; CI #103 | 签名 manifest、SHA256SUMS、文件集合/大小/权限/哈希与危险归档输入已自动化；真实固定 URL 下载待 VPS |
+| UPDATE-02 | D | 完成（隔离/信任边界） | tools/release/build-bootstrap.sh; install.sh | test_stage_d_bootstrap.sh; CI #103 | bootstrap 固定版本、包/公钥 URL 与 SHA-256，不跟随 main/latest；首次 bootstrap HTTPS 信任仍需发布流程与 VPS 记录 |
 | UPDATE-03 | D | 完成（隔离） | lib/update.sh: update_install_trusted_key | test_stage_d_release.sh | 首次受信公钥固定、不同公钥静默替换被拒绝；正式密钥轮换流程作为发布运维事项单独执行 |
 | UPDATE-04 | D | 完成（隔离） | lib/update.sh: update_install_manager_package | test_stage_d_release.sh; CI #103 | 外层包 SHA、签名发行内容、release smoke、版本目录切换与同版本幂等已覆盖；真实磁盘/断电故障待 VPS |
 | UPDATE-05 | D | 完成（隔离） | lib/update.sh: update_manager_rollback | test_stage_d_release.sh | 上一版本完整性/冒烟校验后回退，失败恢复 current；真实运行中版本切换待 VPS |
@@ -98,7 +98,7 @@
 | PERF-01 | D/跨阶段 | 完成（架构/自动化） | lib/maintenance.sh; templates/relay-manager-maintenance.* | test_stage_d_maintenance.sh; test_stage_b_core_service.sh | 无自有常驻管理器 daemon，维护为 systemd oneshot/timer；真实长期 RSS/CPU 待 VPS 观察 |
 | PERF-02 | D/跨阶段 | 完成（受管增长边界） | lib/maintenance.sh; lib/backup.sh | test_stage_d_maintenance.sh; CI #103 | 终态事务、备份、撤销/孤儿导出、D4 证据、旧 manager/core 版本均有保守回收；恢复状态/未知内容/当前及回退版本受保护 |
 | PERF-03 | D/跨阶段 | 完成（可观测/边界） | lib/maintenance.sh: maintenance_status_json | test_stage_d_maintenance.sh | 报告磁盘与受管目录增长；不改 system journal / Fail2ban 全局 logrotate，Xray access log 默认关闭；低配 VPS 长期压力仍待实机 |
-| TEST-01 | A/跨阶段 | 完成当前阶段自动化 | tests/run.sh; .github/workflows/ci.yml | CI #103: 27/0/0; bash -n; ShellCheck; pinned Xray parse | 真实 systemd/网络/SSH/UFW/Fail2ban/更新恢复仍属于 TEST-02 |
-| TEST-02 | A/跨阶段 | 待最终统一实机验收 | docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md; docs/STAGE_D_REAL_VPS_CHECKLIST.md | — | A-D 代码/隔离自动化已收尾，下一 Gate 为可恢复 VM/VPS 统一真实验收 |
-| TEST-03 | A/跨阶段 | 完成验收记录框架 | docs/TEST_REPORT.md; docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md; docs/STAGE_D_REAL_VPS_CHECKLIST.md | Stage A-D 自动化 + CI #103 | 每个真实 case 仍需镜像/架构/版本/命令/结果/脱敏证据 |
-| TEST-04 | A/跨阶段 | 待最终 Gate | docs/TEST_REPORT.md; docs/STAGE_*_REAL_VPS_CHECKLIST.md | CI #103 为当前自动化基线 | B/C/D checklist 的真实门槛全部通过后，才能进入首个发布候选版本判定 |
+| TEST-01 | A/跨阶段 | 完成当前阶段自动化 | tests/run.sh; .github/workflows/ci.yml | CI #212: 33/0/0; bash -n; ShellCheck; pinned Xray parse | 真实环境未覆盖部分仍属于 TEST-02 |
+| TEST-02 | A/跨阶段 | 部分真实验收完成 | docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md; docs/STAGE_D_REAL_VPS_CHECKLIST.md | T25 PASS；SSH/UFW/crash-recovery/Xray lifecycle 关键实机路径 PASS | Fail2ban、Stage D 发行/恢复/卸载、ARM64 与剩余系统/网络矩阵仍需完成 |
+| TEST-03 | A/跨阶段 | 完成验收记录框架 | docs/TEST_REPORT.md; docs/STAGE_B_REAL_VPS_CHECKLIST.md; docs/STAGE_C_REAL_VPS_CHECKLIST.md; docs/STAGE_D_REAL_VPS_CHECKLIST.md | Stage A-D 自动化 + CI #212 + 部分真实 VPS 证据 | 剩余真实 case 仍需镜像/架构/版本/命令/结果/脱敏证据 |
+| TEST-04 | A/跨阶段 | 待剩余发布 Gate | docs/TEST_REPORT.md; docs/RELEASE_READINESS.md; docs/STAGE_*_REAL_VPS_CHECKLIST.md | CI #212 + 已完成实机证据 | 剩余阻断项全部通过后，才把 VERSION 从 0.2.0-dev 切换到计划的 1.0.0-rc.1 |

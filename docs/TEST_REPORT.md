@@ -1,32 +1,47 @@
 # AsterNode 测试报告
 
-- 报告日期：2026-10-03
+- 报告日期：2026-10-06
 - 管理器版本：0.2.0-dev
-- 当前阶段：Stage A-D 功能代码与隔离自动化收尾完成；进入统一真实 VPS Gate 前的冻结基线
+- 当前阶段：Stage A-D 功能代码与隔离自动化收尾；关键真实 VPS 路径已部分通过，进入 release-prep 与剩余 Gate 收口
 - 分支：`dev/stage-d-maintenance`
-- Stage D 稳定功能基线：`489fb8ac94f8847d68ad4f46a27f9be04deb6ef0`
-- GitHub Actions：#103，`success`
-- 自动化：`27 passed / 0 failed / 0 skipped`
+- 当前冻结基线：`e532bb0928cd465dc356c45394aebb02270e1bab`
+- GitHub Actions：#212，`success`
+- 自动化：`33 passed / 0 failed / 0 skipped`
 - Bash syntax：PASS
 - ShellCheck：PASS
 - 固定 Xray v26.3.27 服务端/客户端真实核心配置解析：PASS
-- 生产凭据：未使用
+- 生产凭据：未写入报告
 
-## CI #103 结果
+## CI #212 结果
 
-`dev/stage-d-maintenance` 的 GitHub Actions #103：
+`dev/stage-d-maintenance` 的 GitHub Actions #212：
 
 ```text
 unit-and-static     success
 stage-b-real-xray   success
 
-Summary: passed=27 failed=0 skipped=0
+Summary: passed=33 failed=0 skipped=0
 bash -n: PASS
 shellcheck: PASS
 Xray v26.3.27 server/client config parse: PASS
 ```
 
-这说明当前仓库的隔离逻辑、静态检查和固定 Xray 配置解析形成了稳定自动化基线，但**不等于真实 VPS Gate 已通过**。真实 systemd 生命周期、远程 SSH、UFW 规则实际顺序、Fail2ban 日志消费、线路代理链、远程 bootstrap、更新/回退、磁盘与重启故障仍必须实测。
+自动化基线已经稳定，但不能替代尚未覆盖的真实系统/网络/发行路径。
+
+## 已确认的真实 VPS 证据
+
+- **T25：PASS**。真实 3x-ui 线路机 → AsterNode 落地 Xray 的 VLESS + RAW/TCP + REALITY 全链路已完成认证、代理请求与落地出口确认。
+- **SSH recovery：PASS（已覆盖关键故障路径）**。Ubuntu 24.04 `ssh.socket` 场景完成实际入口验证，并覆盖事务恢复、超时/回滚与 SIGKILL 中断窗口；恢复后基线入口可用且无非终态事务。
+- **UFW 白名单/临时公网开放：PASS（已覆盖关键路径）**。空白名单真实外部对照确认节点端口被拒绝；临时开放期间外部 TCP 可达，到期恢复 managed DENY；维护 reconciler 缺失时 fail-closed；COMMITTED + ARMED crash window 可由全局 maintenance timer 清理。
+- **Xray service lifecycle：PASS**。最后一个启用节点被禁用、重新启用、最后节点删除均在真实 VPS 验证；最终为 `inactive + disabled`，无 443/测试端口监听、无非终态事务。
+- **验收环境收尾：PASS**。节点、线路、temporary opens 清空；UFW 仅保留受管 SSH 入口；maintenance timer 保持 active + enabled。
+
+## 尚未闭环的发布阻断项
+
+- Fail2ban 的真实攻击触发、封禁、解封。
+- Stage D D-VPS-01～09 中尚未逐项形成真实证据的固定 HTTPS bootstrap、manager/core 更新与回退、同机/跨机恢复、卸载/重装、长期资源增长和中断/磁盘故障注入。
+- ARM64 实机；以及当前承诺范围内尚未覆盖的 Debian/Ubuntu、IPv4/双栈/IPv6-only/NAT 组合。
+- 正式发布资产 URL、签名密钥运维与首个 RC 的最终 VERSION/tag/release 流程。
 
 ## Stage D 自动化证据
 
@@ -54,9 +69,9 @@ Xray v26.3.27 server/client config parse: PASS
 
 Stage D 收尾不会降低 Stage B/C 的真实门槛。
 
-Stage B 仍需执行 `docs/STAGE_B_REAL_VPS_CHECKLIST.md`，包括真实 systemd、IPv4/双栈/IPv6-only/NAT、外部服务不接管、T24 客户端、T25 真实 3x-ui 完整代理链、UUID/REALITY 轮换与来源迁移。
+Stage B 已取得 T25 真实 3x-ui 完整代理链证据；其余未覆盖的 systemd/网络矩阵、外部服务不接管、T24 独立客户端记录、轮换与来源迁移仍按 checklist 补齐，不把单一已验收组合外推到全部环境。
 
-Stage C 仍需执行 `docs/STAGE_C_REAL_VPS_CHECKLIST.md`，包括 SSH service/socket 与故障注入、Root/密码收紧、UFW 来源白名单真实对照、复杂防火墙边界、临时开放/重启以及 Fail2ban 实际封禁/解封。
+Stage C 的 SSH socket/故障恢复、UFW 来源对照与临时开放 crash-recovery 已有关键实机证据；Fail2ban 实际封禁/解封以及 checklist 中未覆盖的发行版/复杂防火墙组合仍需补齐。
 
 ## Stage D 真实 Gate
 
@@ -73,6 +88,6 @@ Stage C 仍需执行 `docs/STAGE_C_REAL_VPS_CHECKLIST.md`，包括 SSH service/s
 
 ## 当前结论
 
-**Stage A-D 的功能代码与隔离自动化开发已经收尾。** 当前稳定基线为 `489fb8a` / CI #103。下一步按照项目既定计划执行 B/C/D 三份 checklist 的统一真实 VPS 验收；在真实 Gate 全部通过之前，当前版本仍保持开发/预发布状态，不标记为生产稳定。
+**Stage A-D 的功能代码与隔离自动化开发已经收尾，关键真实 VPS 路径已部分通过。** 当前冻结基线为 `e532bb0` / CI #212。下一步只做 release-prep 与剩余真实 Gate 收口；在发布阻断项全部关闭之前，`VERSION` 保持 `0.2.0-dev`，不标记为生产稳定。
 
-真实 Gate 完成后，再基于验收结果决定是否进入首个 `v1.0.0-rc` 发布候选流程。
+剩余 Gate 全部完成后，再以单独版本提交切换到首个计划候选 `1.0.0-rc.1`。

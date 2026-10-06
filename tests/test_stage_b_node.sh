@@ -183,6 +183,8 @@ assert_json "$rotation" '.status=="rotated" and .exports_invalidated==true and .
 # autostart. Re-enabling an autostart node must restore enable + restart.
 : >"$RM_SYSTEMCTL_LOG"
 node_set_enabled node-stageb false
+disable_tx_count=$(find "$RM_TX_DIR" -mindepth 2 -maxdepth 2 -name transaction.json -type f -exec jq -r 'select(.type=="node-disable" and .status=="COMMITTED") | .transaction_id' {} \; | awk 'NF{n++} END{print n+0}')
+assert_eq 1 "$disable_tx_count" 'node disable transaction was not labeled node-disable'
 grep -Fq 'disable relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
   fail 'disabling the last enabled node did not disable Xray autostart'
 grep -Fq 'stop relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
@@ -191,6 +193,8 @@ assert_json "$(cat "$RM_XRAY_CONFIG")" '(.inbounds|length)==0'
 
 : >"$RM_SYSTEMCTL_LOG"
 node_set_enabled node-stageb true
+enable_tx_count=$(find "$RM_TX_DIR" -mindepth 2 -maxdepth 2 -name transaction.json -type f -exec jq -r 'select(.type=="node-enable" and .status=="COMMITTED") | .transaction_id' {} \; | awk 'NF{n++} END{print n+0}')
+assert_eq 1 "$enable_tx_count" 'node enable transaction was not labeled node-enable'
 grep -Fq 'enable relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||
   fail 're-enabling an autostart node did not restore Xray autostart'
 grep -Fq 'restart relay-manager-xray.service' "$RM_SYSTEMCTL_LOG" ||

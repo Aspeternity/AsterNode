@@ -1,8 +1,8 @@
-# Relay Manager
+# AsterNode
 
-Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。目标是不安装网页面板、不引入数据库或自有常驻守护进程，通过可审计状态、事务和模块边界管理 Xray 节点、安全组件、线路机凭据与维护操作。
+AsterNode 是面向 Debian / Ubuntu 落地 VPS 的轻量节点管理器。当前 CLI/服务内部仍沿用 `relay-manager` 命名；项目品牌与对外名称统一为 AsterNode。目标是不安装网页面板、不引入数据库或自有常驻管理守护进程，通过可审计状态、事务和模块边界管理 Xray 节点、安全组件、线路机凭据与维护操作。
 
-> 当前版本：`0.2.0-dev`。阶段 A-D 的功能代码与隔离自动化现已收尾；Stage D 当前稳定功能基线为 `489fb8a` / CI #103（27 passed / 0 failed / 0 skipped，Bash syntax、ShellCheck 与固定 Xray v26.3.27 真实配置解析均通过）。真实 VPS/systemd、IPv4/IPv6/NAT、SSH 故障注入、UFW 白名单隔离、Fail2ban 实际封禁、3x-ui T24/T25，以及 Stage D 的 bootstrap/更新回退/备份恢复/卸载仍待统一实机验收，因此当前仍不是生产发布版。
+> 当前版本仍为 `0.2.0-dev`，发布准备基线为 `e532bb0` / CI #212：33 passed / 0 failed / 0 skipped，Bash syntax、ShellCheck 与固定 Xray v26.3.27 真实配置解析全部通过。真实 VPS 已完成一组 3x-ui → 落地 Xray 全链路（T25）、SSH 故障恢复/进程模型、UFW 白名单外部对照与临时开放 crash-recovery、以及“最后节点禁用/删除后 Xray inactive + disabled”等关键验收；Fail2ban 实际封禁、Stage D 发行/更新/恢复/卸载真实 Gate、ARM64 与完整系统/网络矩阵仍未闭环，因此当前仍不是生产稳定版。详见 `docs/RELEASE_READINESS.md`。
 
 ## 当前进展
 
@@ -21,7 +21,7 @@ Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。�
 - 线路来源地址采用 `source-add → 实际验证 → source-remove` 的迁移模型，避免直接整组替换。
 - 纯元数据/来源状态更新不再无意义重启 Xray，同时将受管配置摘要纳入事务观察，发现外部漂移立即停止。
 
-`dev/stage-b-node-continuation` 当前稳定基线的 CI 同时运行隔离单元/静态检查和固定 Xray v26.3.27 的服务端、客户端配置测试。CI #59 在提交 `0a5be45a` 上得到 `18 passed / 0 failed / 0 skipped`，ShellCheck 与真实 Xray 配置解析均通过。配置测试通过不等于线路 VPS 的真实认证和代理请求已经通过。
+Stage B 的自动化里程碑最初由 CI #59 建立；当前完整回归已统一到 CI #212。真实线路侧已完成 T25：3x-ui 线路机 → AsterNode 落地 Xray 的 REALITY 认证、代理请求与落地出口验证通过。该结果只证明已验收组合，不外推为所有 3x-ui/Xray 版本与全部网络形态均已验证。
 
 阶段 C 已完成代码与隔离自动化收尾：
 
@@ -30,7 +30,7 @@ Relay Manager 是面向 Debian / Ubuntu 落地 VPS 的轻量 Bash 管理器。�
 - Fail2ban：安装建议、已有 sshd jail 冲突拒绝、file/systemd 日志后端、UFW banaction、实际 SSH 端口、日志源健康、封禁列表/单 IP 解封、受管 jail 增长边界与仅停用自有部分。
 - CI #88 在 `bd4d10d` 上得到 `21 passed / 0 failed / 0 skipped`，Bash syntax、ShellCheck 与固定 Xray 配置解析均通过。
 
-Stage C 的真实 SSH/UFW/Fail2ban 门槛按项目计划延后到 A-D 全部开发完成后的统一实机验收；详见 `docs/STAGE_C_REAL_VPS_CHECKLIST.md`。
+Stage C 已完成多项真实 VPS 验收：Ubuntu 24.04 `ssh.socket` 场景、SSH 迁移/回滚与 SIGKILL crash-recovery、UFW 默认拒绝与来源对照、临时公网开放的正常到期和关键 crash window 均已有实机证据。Fail2ban 实际攻击触发/封禁/解封以及剩余系统矩阵仍是发布阻断项；详见 `docs/STAGE_C_REAL_VPS_CHECKLIST.md` 与 `docs/RELEASE_READINESS.md`。
 
 Stage D 已完成代码与隔离自动化收尾：
 
@@ -40,9 +40,9 @@ Stage D 已完成代码与隔离自动化收尾：
 - 备份/恢复：0600 完整性恢复点；同机恢复保留当前安全状态，跨机只导入禁用节点/线路机供人工复核。
 - 卸载：先做所有权/漂移预检并创建恢复点；只删除可证明归 AsterNode 管理的对象，默认保留 SSH/UFW/Fail2ban 与受信发行公钥。
 - 低资源维护：无自有常驻 manager daemon；对终态事务、备份、孤儿导出/证据和旧版本做保守有界回收，未知内容与恢复状态不自动删除。
-- CI #103 在 `489fb8a` 上得到 `27 passed / 0 failed / 0 skipped`，真实 Xray job、Bash syntax 与 ShellCheck 全部通过。
+- 当前完整回归基线为 `e532bb0` / CI #212：`33 passed / 0 failed / 0 skipped`，真实 Xray job、Bash syntax 与 ShellCheck 全部通过。
 
-Stage D 的真实门槛见 `docs/STAGE_D_REAL_VPS_CHECKLIST.md`。下一阶段不是继续扩功能，而是按 B/C/D checklist 执行统一真实 VPS Gate；Gate 通过后再准备首个发布候选版本。
+Stage D 的发行/更新/备份恢复/卸载/资源增长等真实门槛仍需按 `docs/STAGE_D_REAL_VPS_CHECKLIST.md` 补齐。当前进入 release-prep 冻结阶段：不再扩功能，只修复发布阻断问题并补齐剩余真实 Gate。
 
 ## 只读使用
 
@@ -96,7 +96,7 @@ sudo ./install.sh --package relay-manager-<version>.tar.gz \
   --trusted-key RELEASE.pub.pem
 ```
 
-本项目当前仍是开发阶段；正式公共 URL、密钥轮换流程以及 A-D 统一实机 Gate 完成前，不宣称生产稳定。
+本项目当前仍是开发阶段；正式公共 bootstrap URL 尚未发布，签名密钥运维与剩余真实 Gate 也尚未闭环，因此不宣称生产稳定。当前 `VERSION` 继续保持 `0.2.0-dev`；只有剩余发布阻断项通过后，才在单独的版本提交中切换到首个 RC（计划目标：`1.0.0-rc.1`）。
 
 ## 测试
 
@@ -106,7 +106,7 @@ sudo ./install.sh --package relay-manager-<version>.tar.gz \
 
 测试通过 `RM_ROOT` 将受管绝对路径重定向到临时目录，避免对开发机的 `/etc`、`/run`、`/var/lib`、SSH、防火墙或 systemd 服务执行集成修改。CI 另用固定摘要下载 Xray v26.3.27 并对生成的服务端/客户端配置执行真实核心解析测试。
 
-仍必须在可恢复 VM / 专用 VPS 完成：真实 systemd 服务生命周期、IPv4/双栈/IPv6-only、NAT、外部 Xray 冲突、SSH 服务/socket 迁移与故障回滚、UFW 来源隔离和临时开放重启恢复、Fail2ban 实际封禁/解封，以及至少一台真实 3x-ui 线路 VPS 的 REALITY 认证、代理请求和落地出口确认。
+仍需在可恢复 VM / 专用 VPS 补齐未完成项：Fail2ban 实际封禁/解封、Stage D 固定版本 bootstrap/更新/恢复/卸载与故障注入、ARM64，以及未覆盖的 Debian/Ubuntu 与 IPv4/双栈/IPv6-only/NAT 组合。T25 真实 3x-ui 全链路、SSH crash-recovery、UFW 临时开放恢复和 Xray service lifecycle 已有实机 PASS 证据。
 
 ## 目录
 
@@ -141,13 +141,13 @@ docs/                      需求矩阵、测试报告和审查交接
 - 节点没有启用线路机凭据时拒绝形成无认证/开放代理。
 - 默认诊断和列表不打印完整 UUID、REALITY 密钥或分享 URI。
 - Target 探测不会自动选择目标、修改节点或开放额外端口。
-- 阶段 B 的自动化通过不能替代真实线路 VPS T24/T25 证据；阶段 C 的自动化通过也不能替代 T05-T20/T26 的真实 SSH、防火墙和 Fail2ban 证据。
+- 自动化通过不能替代真实环境证据；当前 T25、部分 SSH/UFW/crash-recovery 已实机通过，但尚未完成的 Fail2ban、Stage D 与系统/架构/网络矩阵仍按未验证处理。
 
 ## 开发顺序
 
 1. **A 基础**：检测、状态模型、模块接口、事务与恢复、安装入口。
 2. **B 节点**：Xray、VLESS + RAW/TCP + REALITY、线路机、导出、Target、基础诊断。代码/自动化基线完成，真实网络 Gate 待最终验收。
 3. **C 安全**：UFW、SSH 公钥/迁移/保护、Fail2ban。代码/隔离自动化收尾完成，真实安全 Gate 待最终验收。
-4. **D 维护**：更新回退、备份恢复、卸载、发行包与资源增长控制。**代码/隔离自动化已收尾：`489fb8a` / CI #103；下一步为统一真实 VPS Gate**
+4. **D 维护**：更新回退、备份恢复、卸载、发行包与资源增长控制。**当前冻结基线：`e532bb0` / CI #212；进入 release-prep 与剩余真实 VPS Gate 收口。**
 
 需求逐项状态与未验证边界见 `docs/IMPLEMENTATION_MATRIX.md` 和 `docs/TEST_REPORT.md`。
