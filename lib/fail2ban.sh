@@ -16,8 +16,10 @@ f2b_client() {
       -t) return "${RM_F2B_TEST_CONFIG_RC:-0}" ;;
       status)
         if [[ ${2:-} == sshd ]]; then
-          if [[ ${RM_F2B_TEST_STATUS_FAILS:-0} =~ ^[0-9]+$ ]] && ((RM_F2B_TEST_STATUS_FAILS > 0)); then
-            RM_F2B_TEST_STATUS_FAILS=$((RM_F2B_TEST_STATUS_FAILS - 1))
+          local test_status_fails
+          test_status_fails=${RM_F2B_TEST_STATUS_FAILS:-0}
+          if [[ $test_status_fails =~ ^[0-9]+$ ]] && ((test_status_fails > 0)); then
+            RM_F2B_TEST_STATUS_FAILS=$((test_status_fails - 1))
             return 1
           fi
           printf 'Status for the jail: sshd\n'
