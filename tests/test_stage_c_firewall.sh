@@ -89,8 +89,19 @@ printf '%s  /usr/share/ufw/before6.rules\n' "$hash" >"$root/usr/share/ufw/before
 cat >"$RM_UFW_STATUS_FILE" <<'EOF'
 Status: inactive
 EOF
-enabled=$(fw_enable_safe --preserve-port 8443)
+
+# Bug22 regression: real UFW writes human-readable rule/update messages to
+# stdout. firewall enable is a JSON-returning CLI path, so those messages must
+# be preserved on stderr without polluting its machine-readable stdout.
+export RM_UFW_TEST_STDOUT=1
+enable_stderr="$root/ufw-enable-stderr.txt"
+enabled=$(fw_enable_safe --preserve-port 8443 2>"$enable_stderr")
+unset RM_UFW_TEST_STDOUT
 assert_json "$enabled" '.status=="enabled" and .ssh_ports_preserved==[22] and .business_ports_preserved==[8443] and .default_policy_preserved==true'
+grep -Fq 'Rule added' "$enable_stderr" || fail 'UFW enable human output was not preserved on stderr'
+if grep -Fq 'Rule added' <<<"$enabled"; then
+  fail 'UFW human output polluted fw_enable_safe JSON stdout'
+fi
 grep -Fq -- '--force enable' "$RM_UFW_LOG" || fail 'safe UFW enable was not requested'
 assert_json "$(cat "$RM_STATE_FILE")" '
   any(.owned_firewall_rules[]; .kind=="ssh-allow" and .port==22) and
