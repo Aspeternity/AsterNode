@@ -170,13 +170,12 @@ state_update_filter '.nodes=[{
 
 : >"$RM_UFW_LOG"
 export RM_UFW_TEST_STDOUT=1
-apply_stderr="$root/ufw-apply-stderr.txt"
+apply_stderr="$root/ufw-apply-deny-stderr.txt"
 deny_only=$(fw_apply_whitelist node-fw 443 2>"$apply_stderr")
 unset RM_UFW_TEST_STDOUT
 assert_json "$deny_only" '.status=="applied_unverified" and (.sources|length)==0 and (.note|contains("默认拒绝"))'
-grep -Fq 'Rule added' "$apply_stderr" || fail 'UFW whitelist human output was not preserved on stderr'
 if grep -Fq 'Rule added' <<<"$deny_only"; then
-  fail 'UFW human output polluted fw_apply_whitelist JSON stdout'
+  fail 'UFW human output polluted deny-only fw_apply_whitelist JSON stdout'
 fi
 assert_json "$(cat "$RM_STATE_FILE")" '
   ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw")]|length)==1 and
@@ -191,8 +190,15 @@ assert_json "$same" '.status=="already_applied_unverified"'
 assert_eq "$before" "$after" 'idempotent whitelist reapplied UFW commands'
 
 : >"$RM_UFW_LOG"
-old_only=$(fw_apply_whitelist node-fw 443 198.51.100.9)
+export RM_UFW_TEST_STDOUT=1
+apply_stderr="$root/ufw-apply-allow-stderr.txt"
+old_only=$(fw_apply_whitelist node-fw 443 198.51.100.9 2>"$apply_stderr")
+unset RM_UFW_TEST_STDOUT
 assert_json "$old_only" '.status=="applied_unverified" and .sources==["198.51.100.9"]'
+grep -Fq 'Rule added' "$apply_stderr" || fail 'UFW whitelist human output was not preserved on stderr'
+if grep -Fq 'Rule added' <<<"$old_only"; then
+  fail 'UFW human output polluted fw_apply_whitelist JSON stdout'
+fi
 assert_json "$(cat "$RM_STATE_FILE")" '
   ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw")]|length)==2 and
   any(.owned_firewall_rules[]; (.node_id//"")=="node-fw" and .kind=="allow" and .source=="198.51.100.9") and
