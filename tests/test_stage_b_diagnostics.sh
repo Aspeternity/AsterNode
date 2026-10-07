@@ -10,6 +10,7 @@ stage_b_fake_core "$root"
 source "$PROJECT_DIR/diagnostics.sh"
 
 state_init
+state_update_filter '.core_version=$v' --arg v "$(xray_current_version)"
 spec="$root/spec.json"
 stage_b_base_spec "$spec"
 node_create_or_replace_spec "$spec" create >/dev/null
