@@ -32,6 +32,19 @@ xray_asset_json() {
 xray_path_for_version() { printf '%s/%s/xray\n' "$RM_CORE_BASE" "$1"; }
 xray_current_binary() { printf '%s/xray\n' "$RM_CORE_CURRENT"; }
 
+xray_current_version() {
+  local current version
+  current=$(readlink -f "$RM_CORE_CURRENT" 2>/dev/null || true)
+  [[ -n $current &&
+     $(dirname -- "$current") == "$RM_CORE_BASE" &&
+     -d $current && ! -L $current &&
+     -x $current/xray && ! -L $current/xray ]] ||
+    return "$RM_RC_PRECONDITION"
+  version=${current##*/}
+  [[ -n $version ]] || return "$RM_RC_PRECONDITION"
+  printf '%s\n' "$version"
+}
+
 xray_core_installed() { local v=${1:-$(xray_default_version)}; [[ -x $(xray_path_for_version "$v") ]]; }
 
 xray_check_external_conflict() {
