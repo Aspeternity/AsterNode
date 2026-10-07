@@ -169,8 +169,15 @@ state_update_filter '.nodes=[{
 }]'
 
 : >"$RM_UFW_LOG"
-deny_only=$(fw_apply_whitelist node-fw 443)
+export RM_UFW_TEST_STDOUT=1
+apply_stderr="$root/ufw-apply-stderr.txt"
+deny_only=$(fw_apply_whitelist node-fw 443 2>"$apply_stderr")
+unset RM_UFW_TEST_STDOUT
 assert_json "$deny_only" '.status=="applied_unverified" and (.sources|length)==0 and (.note|contains("默认拒绝"))'
+grep -Fq 'Rule added' "$apply_stderr" || fail 'UFW whitelist human output was not preserved on stderr'
+if grep -Fq 'Rule added' <<<"$deny_only"; then
+  fail 'UFW human output polluted fw_apply_whitelist JSON stdout'
+fi
 assert_json "$(cat "$RM_STATE_FILE")" '
   ([.owned_firewall_rules[]|select((.node_id//"")=="node-fw")]|length)==1 and
   any(.owned_firewall_rules[]; (.node_id//"")=="node-fw" and .kind=="deny")
