@@ -14,6 +14,15 @@ target_split() {
   rm_split_host_port "$1"
 }
 
+target_resolve_addresses() {
+  local host=$1 norm
+  if norm=$(rm_normalize_ip_or_cidr "$host" 2>/dev/null) && [[ $norm != */* ]]; then
+    printf '%s\n' "$norm"
+    return 0
+  fi
+  getent ahosts "$host" 2>/dev/null | awk 'NF && !seen[$1]++ {print $1}'
+}
+
 target_resolve_host() {
   local host=$1 norm
   if norm=$(rm_normalize_ip_or_cidr "$host" 2>/dev/null) && [[ $norm != */* ]]; then
@@ -111,6 +120,45 @@ target_dns_shared_edge_json() {
   fi
 }
 
+target_dns_shared_edge_addresses_json() {
+  local host=$1 addresses_json=$2 checks='[]' addr result
+
+  while IFS= read -r addr; do
+    [[ -n $addr ]] || continue
+    result=$(target_dns_shared_edge_json "$host" "$addr") || return $?
+    checks=$(jq -c --arg address "$addr" --argjson result "$result" \
+      '. + [{address:$address,result:$result}]' <<<"$checks")
+  done < <(jq -r '.[]' <<<"$addresses_json")
+
+  jq -n --argjson checks "$checks" '
+    ($checks |
+      if any(.[]; .result.status=="high") then "high"
+      elif any(.[]; .result.status=="unverified") then "unverified"
+      elif (length>0 and all(.[]; .result.status=="low")) then "low"
+      else "unverified"
+      end
+    ) as $status |
+    {
+      status:$status,
+      cname_chain:([$checks[].result.cname_chain[]?] | unique),
+      ptr_names:([$checks[].result.ptr_names[]?] | unique),
+      matches:([$checks[] as $c |
+        $c.result.matches[]? |
+        . + {resolved_address:$c.address}]),
+      address_checks:$checks,
+      reason:(
+        if $status=="high" then
+          "至少一个当前解析地址命中已知共享 CDN/边缘网络特征，拒绝作为 REALITY 推荐 Target"
+        elif $status=="unverified" then
+          "至少一个当前解析地址的 CNAME/PTR 安全检查未完整完成，按 fail-closed 处理"
+        else
+          "全部当前解析地址均未发现已知共享 CDN/边缘 CNAME/PTR 特征"
+        end
+      )
+    }
+  '
+}
+
 target_catalog_policy_json() {
   local target=$1 sni=$2
   if [[ -r $RM_TARGETS_FILE ]]; then
@@ -190,9 +238,118 @@ target_cross_sni_risk_json() {
   fi
 }
 
+target_cross_sni_addresses_json() {
+  local addresses_json=$1 port=$2 original_sni=$3 tmpdir=$4
+  local work="$tmpdir/cross-addresses" checks addr file result idx=0
+  local -a pids=()
+
+  rm -rf "$work"
+  mkdir -p "$work"
+
+  while IFS= read -r addr; do
+    [[ -n $addr ]] || continue
+    file=$(printf '%s/%04d.json' "$work" "$idx")
+    (
+      mkdir -p "$work/probe-$idx"
+      if result=$(target_cross_sni_risk_json "$addr" "$port" "$original_sni" "$work/probe-$idx"); then
+        jq -n --arg address "$addr" --argjson result "$result" \
+          '{address:$address,result:$result}'
+      else
+        jq -n --arg address "$addr" '{
+          address:$address,
+          result:{
+            status:"unverified",
+            cross_sni_valid_hostname:null,
+            probes:[],
+            reason:"跨 SNI 地址探测子任务失败，按 fail-closed 处理"
+          }
+        }'
+      fi
+    ) >"$file" &
+    pids+=("$!")
+    idx=$((idx+1))
+
+    if ((${#pids[@]} >= RM_TARGET_MAX_PARALLEL)); then
+      wait "${pids[0]}" || true
+      pids=("${pids[@]:1}")
+    fi
+  done < <(jq -r '.[]' <<<"$addresses_json")
+
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
+
+  if ((idx==0)); then
+    checks='[]'
+  else
+    checks=$(jq -s '.' "$work"/[0-9][0-9][0-9][0-9].json)
+  fi
+
+  jq -n --argjson checks "$checks" '
+    ($checks |
+      if any(.[]; .result.status=="high") then "high"
+      elif any(.[]; .result.status=="unverified") then "unverified"
+      elif (length>0 and all(.[]; .result.status=="low")) then "low"
+      else "unverified"
+      end
+    ) as $status |
+    {
+      status:$status,
+      cross_sni_valid_hostname:(
+        if any($checks[]; .result.cross_sni_valid_hostname==true) then true
+        elif any($checks[]; .result.cross_sni_valid_hostname==null) then null
+        else false
+        end
+      ),
+      probes:([$checks[] as $c |
+        $c.result.probes[]? |
+        . + {resolved_address:$c.address}]),
+      address_checks:$checks,
+      reason:(
+        if $status=="high" then
+          "至少一个当前解析地址可为无关 SNI 完成有效 TLS 1.3 主机名验证，存在共享边缘/跨 SNI 转发滥用风险"
+        elif $status=="unverified" then
+          "至少一个当前解析地址的跨 SNI 安全探测未完整完成，按 fail-closed 处理"
+        else
+          "全部当前解析地址的跨 SNI 探测均未发现高风险证据"
+        end
+      )
+    }
+  '
+}
+
+target_address_risks_json() {
+  local shared_edge=$1 cross_sni=$2
+  jq -n --argjson edge "$shared_edge" --argjson cross "$cross_sni" '
+    [
+      $edge.address_checks[]? as $e |
+      (($cross.address_checks // []) |
+        map(select(.address==$e.address)) |
+        first) as $c |
+      ($c.result // {
+        status:"skipped",
+        cross_sni_valid_hostname:null,
+        probes:[],
+        reason:"整体 CNAME/PTR 安全门槛未通过，未执行该地址的跨 SNI 探测"
+      }) as $x |
+      {
+        address:$e.address,
+        shared_edge:$e.result,
+        cross_sni:$x,
+        status:(
+          if $e.result.status=="high" or $x.status=="high" then "high"
+          elif $e.result.status=="unverified" or $x.status=="unverified" then "unverified"
+          elif $e.result.status=="low" and ($x.status=="low" or $x.status=="skipped") then "low"
+          else "unverified"
+          end
+        )
+      }
+    ]
+  '
+}
+
 target_probe() {
-  local target=$1 sni=$2 host port resolved connect start end ms tmpdir first_log second_log hdrfile
+  local target=$1 sni=$2 host port resolved resolved_list resolved_addresses connect start end ms tmpdir first_log second_log hdrfile
   local http_status='unverified' redirect='' redirected=false catalog abuse shared_edge cross_sni recommendation_eligible=false recommendation_reason=''
+  local address_risks='[]'
   local risk_note='REALITY 未认证流量可能表现为转发到 Target；CDN/共享目标需单独评估滥用与来源限制。本工具不会因 Target 探测自动开放额外端口。'
 
   rm_split_host_port "$target" >/dev/null 2>&1 || {
@@ -209,11 +366,13 @@ target_probe() {
   fi
 
   IFS=$'\t' read -r host port < <(target_split "$target")
-  resolved=$(target_resolve_host "$host" || true)
+  resolved_list=$(target_resolve_addresses "$host" || true)
+  resolved_addresses=$(printf '%s\n' "$resolved_list" | jq -R -s 'split("\n") | map(select(length>0))')
+  resolved=$(jq -r '.[0] // empty' <<<"$resolved_addresses")
   if [[ -z $resolved ]]; then
     jq -n --arg t "$target" --arg s "$sni" --arg risk "$risk_note" \
       --argjson attempts "$RM_TARGET_HANDSHAKE_ATTEMPTS" --argjson timeout "$RM_TARGET_TLS_TIMEOUT_SECONDS" \
-      '{status:"failed",target:$t,sni:$s,
+      '{status:"failed",target:$t,sni:$s,resolved_addresses:[],
         checks:{dns:"failed",tcp:false,tls13:false,certificate_hostname:false,h2:false,repeated_handshake:false,http_redirect:null},
         reason:"DNS/地址解析失败",risk_note:$risk,
         probe_policy:{handshake_attempts:$attempts,tls_timeout_seconds:$timeout}}'
@@ -222,8 +381,9 @@ target_probe() {
 
   if ! rm_have openssl || ! rm_have timeout; then
     jq -n --arg t "$target" --arg s "$sni" --arg r "$resolved" --arg risk "$risk_note" \
+      --argjson resolved_addresses "$resolved_addresses" \
       --argjson attempts "$RM_TARGET_HANDSHAKE_ATTEMPTS" --argjson timeout "$RM_TARGET_TLS_TIMEOUT_SECONDS" \
-      '{status:"unverified",target:$t,sni:$s,resolved_address:$r,
+      '{status:"unverified",target:$t,sni:$s,resolved_address:$r,resolved_addresses:$resolved_addresses,
         reason:"缺少 openssl/timeout",risk_note:$risk,
         probe_policy:{handshake_attempts:$attempts,tls_timeout_seconds:$timeout}}'
     return 0
@@ -290,16 +450,17 @@ target_probe() {
   fi
 
   catalog=$(target_catalog_policy_json "$target" "$sni")
-  shared_edge=$(jq -nc '{status:"unverified",cname_chain:[],ptr_names:[],matches:[],reason:"基础 Target 条件未通过，未执行共享边缘 DNS 检查"}')
-  cross_sni=$(jq -nc '{status:"unverified",cross_sni_valid_hostname:null,probes:[],reason:"基础 Target 条件未通过，未执行跨 SNI 安全探测"}')
+  shared_edge=$(jq -nc '{status:"unverified",cname_chain:[],ptr_names:[],matches:[],address_checks:[],reason:"基础 Target 条件未通过，未执行共享边缘 DNS 检查"}')
+  cross_sni=$(jq -nc '{status:"unverified",cross_sni_valid_hostname:null,probes:[],address_checks:[],reason:"基础 Target 条件未通过，未执行跨 SNI 安全探测"}')
   if [[ $status == suitable_measured ]]; then
-    shared_edge=$(target_dns_shared_edge_json "$host" "$resolved")
-    if jq -e '.status!="high"' <<<"$shared_edge" >/dev/null; then
-      cross_sni=$(target_cross_sni_risk_json "$resolved" "$port" "$sni" "$tmpdir")
+    shared_edge=$(target_dns_shared_edge_addresses_json "$host" "$resolved_addresses")
+    if jq -e '.status=="low"' <<<"$shared_edge" >/dev/null; then
+      cross_sni=$(target_cross_sni_addresses_json "$resolved_addresses" "$port" "$sni" "$tmpdir")
     else
-      cross_sni=$(jq -nc '{status:"skipped",cross_sni_valid_hostname:null,probes:[],
-        reason:"CNAME/PTR 已命中共享边缘高风险，跳过额外跨 SNI 探测"}')
+      cross_sni=$(jq -nc '{status:"skipped",cross_sni_valid_hostname:null,probes:[],address_checks:[],
+        reason:"至少一个当前解析地址未通过 CNAME/PTR 安全门槛，跳过跨 SNI 探测"}')
     fi
+    address_risks=$(target_address_risks_json "$shared_edge" "$cross_sni")
   fi
 
   abuse=$(jq -n --argjson edge "$shared_edge" --argjson cross "$cross_sni" '
@@ -311,7 +472,7 @@ target_probe() {
        reason:"共享边缘或跨 SNI 安全检查存在未验证项，按 fail-closed 处理"}
     elif $edge.status=="low" and ($cross.status=="low" or $cross.status=="skipped") then
       {status:"low",shared_edge:$edge,cross_sni:$cross,
-       reason:"CNAME/PTR 共享边缘检查与跨 SNI 检查均未发现高风险证据"}
+       reason:"全部当前解析地址的 CNAME/PTR 与跨 SNI 安全检查均未发现高风险证据"}
     else
       {status:"unverified",shared_edge:$edge,cross_sni:$cross,
        reason:"安全检查状态组合无法确认，按 fail-closed 处理"}
@@ -322,7 +483,7 @@ target_probe() {
      jq -e '.status=="low"' <<<"$abuse" >/dev/null &&
      jq -e '.recommendable==true' <<<"$catalog" >/dev/null; then
     recommendation_eligible=true
-    recommendation_reason='网络条件、CNAME/PTR 共享边缘检查与跨 SNI 安全门槛均通过'
+    recommendation_reason='网络条件及全部当前解析地址的 CNAME/PTR 与跨 SNI 安全门槛均通过'
   elif jq -e '.recommendable==false' <<<"$catalog" >/dev/null; then
     recommendation_reason='候选目录将此 Target 标记为不参与推荐'
   elif [[ $status == suitable_measured ]]; then
@@ -338,6 +499,7 @@ target_probe() {
 
   jq -n \
     --arg status "$status" --arg t "$target" --arg s "$sni" --arg r "$resolved" \
+    --argjson resolved_addresses "$resolved_addresses" --argjson address_risks "$address_risks" \
     --argjson latency "$ms" --argjson tcp "$tcp" --argjson tls "$tls" \
     --argjson cert "$cert" --argjson h2 "$h2" --argjson stable "$stable" \
     --arg http "$http_status" --arg redirect "$redirect" --argjson redirected "$redirected" --arg reason "$reason" \
@@ -346,17 +508,18 @@ target_probe() {
     --argjson attempts "$RM_TARGET_HANDSHAKE_ATTEMPTS" \
     --argjson tls_timeout "$RM_TARGET_TLS_TIMEOUT_SECONDS" \
     --argjson http_timeout "$RM_TARGET_HTTP_TIMEOUT_SECONDS" \
-    '{status:$status,target:$t,sni:$s,resolved_address:$r,latency_ms:$latency,
+    '{status:$status,target:$t,sni:$s,resolved_address:$r,resolved_addresses:$resolved_addresses,latency_ms:$latency,
       checks:{dns:"ok",tcp:$tcp,tls13:$tls,certificate_hostname:$cert,h2:$h2,
         repeated_handshake:$stable,http_status:$http,http_redirect:$redirected,
         redirect:(if $redirect=="" then null else $redirect end)},
       reason:(if $reason=="" then null else $reason end),
       warning:(if $warning=="" then null else $warning end),
       abuse_risk:$abuse,
+      address_risks:$address_risks,
       catalog_policy:$catalog,
       recommendation_eligible:$eligible,
       recommendation_reason:$recommendation_reason,
-      note:"HTTP 非 200 不自动等于 REALITY 不可用；HTTP 重定向、共享 CDN/边缘 CNAME/PTR、跨 SNI 风险或未验证风险均不进入推荐结果。结果仅代表当前 VPS 本次实测。",
+      note:"HTTP 非 200 不自动等于 REALITY 不可用；多地址域名按当前全部解析地址聚合安全风险，任一 high/unverified 均不进入推荐；推荐结果不会自动写入节点配置。",
       risk_note:$risk,
       probe_policy:{handshake_attempts:$attempts,tls_timeout_seconds:$tls_timeout,
         http_timeout_seconds:$http_timeout}}'
@@ -400,7 +563,7 @@ target_probe_candidates() {
   results=$(jq -s '.' "$tmpdir"/*.json)
   suitable=$(jq '[
       .[] | select(.status=="suitable_measured") |
-      {target,sni,resolved_address,latency_ms,recommendation_eligible,abuse_risk,candidate}
+      {target,sni,resolved_address,resolved_addresses,latency_ms,recommendation_eligible,abuse_risk,candidate}
     ] | sort_by(.latency_ms)' <<<"$results")
   recommended=$(jq '[
       .[] |
@@ -409,7 +572,7 @@ target_probe_candidates() {
     ] | sort_by(._selection_rank) |
       (.[0] // null) |
       if .==null then null else
-        {target,sni,resolved_address,latency_ms,abuse_risk,candidate,
+        {target,sni,resolved_address,resolved_addresses,latency_ms,abuse_risk,candidate,
          selection_reason:"通过 CNAME/PTR 共享边缘与跨 SNI 双重防偷跑门槛的候选中实测握手延迟最低；同延迟时优先官方参考候选"}
       end' <<<"$results")
   policy=$(jq -r .policy "$RM_TARGETS_FILE")
