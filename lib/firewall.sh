@@ -293,9 +293,9 @@ fw_exec_rule_json() {
   local -a args=()
   mapfile -t args < <(jq -r '.[]' <<<"$json")
   case "$op:$placement" in
-    add:append) fw_ufw "${args[@]}" ;;
-    add:prepend) fw_ufw prepend "${args[@]}" ;;
-    delete:*) fw_ufw --force delete "${args[@]}" ;;
+    add:append) fw_ufw "${args[@]}" >&2 ;;
+    add:prepend) fw_ufw prepend "${args[@]}" >&2 ;;
+    delete:*) fw_ufw --force delete "${args[@]}" >&2 ;;
     *) return "$RM_RC_PRECONDITION" ;;
   esac
 }
@@ -441,7 +441,7 @@ fw_enable_safe() {
     added=$(jq -c --argjson r "$(jq -n --arg c "$comment" --argjson p "$p" --argjson a "$rule" '{comment:$c,port:$p,kind:"preserve-allow",source:"any",args:$a}')" '.+[$r]' <<<"$added")
   done
 
-  if ! fw_ufw --force enable; then
+  if ! fw_ufw --force enable >&2; then
     while IFS= read -r rr; do [[ -n $rr ]] && fw_exec_rule_json "$(jq -c .args <<<"$rr")" delete || true; done < <(jq -c '.[]' <<<"$added" | tac)
     return "$RM_RC_APPLY_ROLLED_BACK"
   fi
