@@ -155,7 +155,7 @@ node_candidate_from_spec() {
     rm_error 'node_id 已存在'
     return "$RM_RC_PRECONDITION"
   fi
-  jq --arg nid "$nid" --arg now "$now" --arg manager "$RM_MANAGER_VERSION" --arg core "$(xray_default_version)" --slurpfile spec "$spec" '
+  jq --arg nid "$nid" --arg now "$now" --arg manager "$RM_MANAGER_VERSION" --slurpfile spec "$spec" '
     . as $state | ($spec[0]) as $s |
     ([ $state.nodes[] | select(.node_id==$nid) ] | first // {}) as $oldn |
     .nodes = ([.nodes[] | select(.node_id != $nid)] +
@@ -165,7 +165,7 @@ node_candidate_from_spec() {
       ([ $state.upstreams[] | select(.upstream_id==$u.upstream_id) ] | first // {}) as $oldu |
       ($u + {created_at:($u.created_at // $oldu.created_at // $now),updated_at:$now})
     ]) |
-    .manager_version=$manager | .core_version=$core | .config_revision += 1
+    .manager_version=$manager | .config_revision += 1
   ' "$RM_STATE_FILE" | jq "$_node_sources_rebuild_filter" >"$candidate"
 }
 
@@ -356,7 +356,7 @@ node_apply_candidate_state() {
   node_candidate_validate_bindings "$candidate" || return $?
   node_assert_managed_config_not_drifted || return $?
 
-  local tmpdir config core tx rc=0 enabled_count autostart was_active=false cfgsha c2 expected_config_sha snapshot_config_sha
+  local tmpdir config core current_core state_core candidate_core tx rc=0 enabled_count autostart was_active=false cfgsha c2 expected_config_sha snapshot_config_sha
   expected_config_sha=$(jq -r --arg path '/etc/relay-manager-xray/config.json' '
     [.owned_files[]? | select(.path==$path) | .sha256][0] // empty
   ' "$RM_STATE_FILE")
@@ -367,8 +367,20 @@ node_apply_candidate_state() {
   core=$(xray_current_binary)
 
   if ((enabled_count>0)); then
-    xray_core_installed "$(xray_default_version)" || {
-      rm_error '请先安装受管 Xray 核心'
+    current_core=$(xray_current_version) || {
+      rm_error '受管 Xray core/current 链接无效或当前核心不可执行，请先修复核心安装状态。'
+      rm -rf "$tmpdir"
+      return "$RM_RC_PRECONDITION"
+    }
+    state_core=$(jq -r '.core_version // empty' "$RM_STATE_FILE")
+    candidate_core=$(jq -r '.core_version // empty' "$candidate")
+    if [[ -z $state_core || $state_core != "$current_core" || $candidate_core != "$current_core" ]]; then
+      rm_error "Xray 核心状态不一致：state=${state_core:-<empty>} candidate=${candidate_core:-<empty>} current=$current_core。请先执行 core install/update/rollback 完成对账。"
+      rm -rf "$tmpdir"
+      return "$RM_RC_PRECONDITION"
+    fi
+    xray_core_installed "$current_core" || {
+      rm_error "当前受管 Xray 核心未安装完整: $current_core"
       rm -rf "$tmpdir"
       return "$RM_RC_PRECONDITION"
     }
